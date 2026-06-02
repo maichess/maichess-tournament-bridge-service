@@ -16,9 +16,22 @@ internal sealed class RegistrationStore
     internal Registration? GetById(string id) =>
         _registrations.TryGetValue(id, out Registration? reg) ? reg : null;
 
-    internal Registration? FindByTournament(string serverUrl, string tournamentId) =>
+    internal Registration? FindDirector(string serverUrl, string tournamentId) =>
         _registrations.Values.FirstOrDefault(r =>
-            r.ServerUrl == serverUrl && r.TournamentId == tournamentId);
+            r.ServerUrl == serverUrl
+            && r.TournamentId == tournamentId
+            && !string.IsNullOrEmpty(r.DirectorToken));
+
+    internal IReadOnlyList<Registration> FindAllByTournament(string serverUrl, string tournamentId) =>
+        _registrations.Values
+            .Where(r => r.ServerUrl == serverUrl && r.TournamentId == tournamentId)
+            .ToList();
+
+    internal Registration? FindByBot(string serverUrl, string tournamentId, string botId) =>
+        _registrations.Values.FirstOrDefault(r =>
+            r.ServerUrl == serverUrl
+            && r.TournamentId == tournamentId
+            && r.MaichessBotId == botId);
 
     internal IReadOnlyList<Registration> GetAll() => [.. _registrations.Values];
 

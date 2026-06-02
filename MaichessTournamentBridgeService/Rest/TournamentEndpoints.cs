@@ -112,24 +112,34 @@ internal static class TournamentEndpoints
         try
         {
             Tournament tournament = await client.GetTournamentAsync(serverUrl, id, ct);
-            Registration? registration = store.FindByTournament(serverUrl, id);
+            IReadOnlyList<Registration> registrations = store.FindAllByTournament(serverUrl, id);
+
+            var botRegistrations = registrations
+                .Where(r => !string.IsNullOrEmpty(r.MaichessBotId))
+                .Select(r => new
+                {
+                    registration_id = r.Id,
+                    maichess_bot_id = r.MaichessBotId,
+                    status = r.Status,
+                })
+                .ToList();
+
+            var allMappings = registrations
+                .SelectMany(r => r.GameMappings)
+                .ToList();
+
+            Registration? director = registrations.FirstOrDefault(r => !string.IsNullOrEmpty(r.DirectorToken));
 
             return Results.Ok(new
             {
                 tournament,
-                registration = registration is null
-                    ? null
-                    : new
-                    {
-                        registration_id = registration.Id,
-                        maichess_bot_id = registration.MaichessBotId,
-                        status = registration.Status,
-                    },
-                game_mappings = registration?.GameMappings.Select(m => new
+                is_director = director is not null,
+                registrations = botRegistrations,
+                game_mappings = allMappings.Select(m => new
                 {
                     tournament_game_id = m.TournamentGameId,
                     match_db_id = m.MatchDbMatchId,
-                }) ?? [],
+                }),
             });
         }
         catch (HttpRequestException)
@@ -147,17 +157,22 @@ internal static class TournamentEndpoints
         CancellationToken ct)
     {
         string serverUrl = config.ResolveServerUrl(server);
-        Registration? reg = store.FindByTournament(serverUrl, id);
-        if (reg is null)
+        Registration? director = store.FindDirector(serverUrl, id);
+        if (director is null)
         {
-            return Results.NotFound();
+            return Results.StatusCode(403);
         }
 
         try
         {
-            await client.DeleteTournamentAsync(serverUrl, reg.DirectorToken, id, ct);
-            reg.Status = "terminated";
-            store.Save(reg);
+            await client.DeleteTournamentAsync(serverUrl, director.DirectorToken, id, ct);
+
+            foreach (Registration reg in store.FindAllByTournament(serverUrl, id))
+            {
+                reg.Status = "terminated";
+                store.Save(reg);
+            }
+
             return Results.NoContent();
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -180,19 +195,25 @@ internal static class TournamentEndpoints
         CancellationToken ct)
     {
         string serverUrl = config.ResolveServerUrl(server);
-        Registration? reg = store.FindByTournament(serverUrl, id);
-        if (reg is null)
+        Registration? director = store.FindDirector(serverUrl, id);
+        if (director is null)
         {
-            return Results.NotFound();
+            return Results.StatusCode(403);
         }
 
         try
         {
             Tournament tournament = await client.StartTournamentAsync(
-                serverUrl, reg.DirectorToken, id, ct);
-            reg.Status = "active";
-            store.Save(reg);
-            orchestrator.StartDriving(reg);
+                serverUrl, director.DirectorToken, id, ct);
+
+            foreach (Registration reg in store.FindAllByTournament(serverUrl, id)
+                .Where(r => !string.IsNullOrEmpty(r.BotToken)))
+            {
+                reg.Status = "active";
+                store.Save(reg);
+                orchestrator.StartDriving(reg);
+            }
+
             return Results.Ok(tournament);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -213,18 +234,21 @@ internal static class TournamentEndpoints
         BridgeConfig config,
         RegistrationStore store,
         Bots.BotsClient engineClient,
+        ClaimsPrincipal user,
         CancellationToken ct)
     {
         string serverUrl = config.ResolveServerUrl(server);
-        Registration? reg = store.FindByTournament(serverUrl, id);
-        if (reg is null)
-        {
-            return Results.NotFound();
-        }
+        string userId = GetUserId(user);
 
         JsonDocument body = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: ct);
         string botId = body.RootElement.GetProperty("bot_id").GetString()
             ?? throw new InvalidOperationException("bot_id is required");
+
+        Registration? existing = store.FindByBot(serverUrl, id, botId);
+        if (existing is not null)
+        {
+            return Results.Conflict(new { error = $"Bot {botId} is already registered" });
+        }
 
         ListBotsResponse bots = await engineClient.ListBotsAsync(
             new ListBotsRequest(), cancellationToken: ct);
@@ -238,10 +262,18 @@ internal static class TournamentEndpoints
             serverUrl, bot.Name, true, ct);
         await client.JoinTournamentAsync(serverUrl, botIdentity.Token, id, ct);
 
-        reg.MaichessBotId = botId;
-        reg.BotToken = botIdentity.Token;
-        reg.Status = "registered";
-        store.Save(reg);
+        Registration reg = store.Save(new Registration
+        {
+            Id = $"reg_{Guid.NewGuid():N}",
+            ServerUrl = serverUrl,
+            TournamentId = id,
+            TournamentName = string.Empty,
+            MaichessBotId = botId,
+            MaichessUserId = userId,
+            Status = "registered",
+            DirectorToken = string.Empty,
+            BotToken = botIdentity.Token,
+        });
 
         return Results.Ok(new
         {
@@ -255,13 +287,20 @@ internal static class TournamentEndpoints
     private static async Task<IResult> WithdrawBot(
         string id,
         string? server,
+        string? bot_id,
         TournamentServerClient client,
         BridgeConfig config,
         RegistrationStore store,
         CancellationToken ct)
     {
         string serverUrl = config.ResolveServerUrl(server);
-        Registration? reg = store.FindByTournament(serverUrl, id);
+
+        if (string.IsNullOrEmpty(bot_id))
+        {
+            return Results.BadRequest(new { error = "bot_id query parameter is required" });
+        }
+
+        Registration? reg = store.FindByBot(serverUrl, id, bot_id);
         if (reg is null)
         {
             return Results.NotFound();
@@ -271,8 +310,6 @@ internal static class TournamentEndpoints
         {
             await client.WithdrawFromTournamentAsync(serverUrl, reg.BotToken, id, ct);
             reg.Status = "withdrawn";
-            reg.MaichessBotId = string.Empty;
-            reg.BotToken = string.Empty;
             store.Save(reg);
             return Results.NoContent();
         }
@@ -295,8 +332,9 @@ internal static class TournamentEndpoints
         RoundPairingsResponse pairings = await client.GetRoundPairingsAsync(
             serverUrl, id, round, ct);
 
-        Registration? reg = store.FindByTournament(serverUrl, id);
-        List<GameMapping> mappings = reg?.GameMappings ?? [];
+        var mappings = store.FindAllByTournament(serverUrl, id)
+            .SelectMany(r => r.GameMappings)
+            .ToList();
 
         var enriched = pairings.Pairings.Select(p =>
         {
@@ -337,9 +375,11 @@ internal static class TournamentEndpoints
         CancellationToken ct)
     {
         string serverUrl = config.ResolveServerUrl(server);
-        Registration? reg = store.FindByTournament(serverUrl, id);
+        IReadOnlyList<Registration> regs = store.FindAllByTournament(serverUrl, id);
+        Registration? tokenSource = regs.FirstOrDefault(r => !string.IsNullOrEmpty(r.BotToken))
+            ?? regs.FirstOrDefault(r => !string.IsNullOrEmpty(r.DirectorToken));
 
-        string token = reg?.BotToken ?? reg?.DirectorToken ?? string.Empty;
+        string token = tokenSource?.BotToken ?? tokenSource?.DirectorToken ?? string.Empty;
 
         httpContext.Response.ContentType = "text/event-stream";
         httpContext.Response.Headers.CacheControl = "no-cache";
