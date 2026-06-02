@@ -1,6 +1,6 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MaichessTournamentBridgeService", "MaichessTournamentBridgeService.csproj", "{4BB3C111-60F8-462C-BA34-B43F12819D34}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MaichessTournamentBridgeService", "MaichessTournamentBridgeService\MaichessTournamentBridgeService.csproj", "{4BB3C111-60F8-462C-BA34-B43F12819D34}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
