@@ -19,12 +19,7 @@ internal sealed class TournamentOrchestrator(
     private readonly ConcurrentDictionary<string, string> _gameOwners = new();
     private readonly ConcurrentDictionary<string, (string WhiteBotId, string BlackBotId)> _roundPairings = new();
 
-    internal static bool IsOurTurn(GameEvent evt, string ourColor)
-    {
-        int moveCount = evt.Moves?.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
-        bool isWhiteTurn = moveCount % 2 == 0;
-        return (ourColor == "white" && isWhiteTurn) || (ourColor == "black" && !isWhiteTurn);
-    }
+    internal static bool IsOurTurn(GameEvent evt, string ourColor) => evt.Turn == ourColor;
 
     internal Task StartDriving(Registration registration)
     {
@@ -210,6 +205,7 @@ internal sealed class TournamentOrchestrator(
                 [],
                 "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
                 "ongoing",
+                "white",
                 300_000,
                 300_000);
 
@@ -224,6 +220,15 @@ internal sealed class TournamentOrchestrator(
                     gameId,
                     openingMove,
                     ct);
+
+                // We submit the opening move before subscribing to the game
+                // stream, so we never receive our own move event for it. Record
+                // it here so the move list and turn stay accurate.
+                state = state with
+                {
+                    Moves = [.. state.Moves, openingMove],
+                    TurnColor = ourColor == "white" ? "black" : "white",
+                };
             }
 
             await DriveGameAsync(registration, state, ct);

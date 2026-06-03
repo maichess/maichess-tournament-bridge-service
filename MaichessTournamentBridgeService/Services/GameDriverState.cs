@@ -9,17 +9,11 @@ internal sealed record GameDriverState(
     List<string> Moves,
     string CurrentFen,
     string Status,
+    string TurnColor,
     long WhiteTimeMs,
     long BlackTimeMs)
 {
-    internal bool IsOurTurn
-    {
-        get
-        {
-            bool whiteToMove = Moves.Count % 2 == 0;
-            return OurColor == "white" ? whiteToMove : !whiteToMove;
-        }
-    }
+    internal bool IsOurTurn => TurnColor == OurColor;
 
     internal bool IsFinished => Status is not "ongoing" and not "started";
 }
