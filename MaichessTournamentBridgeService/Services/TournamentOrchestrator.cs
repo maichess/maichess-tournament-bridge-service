@@ -25,17 +25,19 @@ internal sealed class TournamentOrchestrator(
         return (ourColor == "white" && isWhiteTurn) || (ourColor == "black" && !isWhiteTurn);
     }
 
-    internal void StartDriving(Registration registration)
+    internal Task StartDriving(Registration registration)
     {
         if (_activeTournaments.ContainsKey(registration.Id))
         {
-            return;
+            return Task.CompletedTask;
         }
 
         var cts = new CancellationTokenSource();
         _activeTournaments[registration.Id] = cts;
 
-        _ = Task.Run(() => DriveAsync(registration, cts.Token));
+        var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = Task.Run(() => DriveAsync(registration, connected, cts.Token));
+        return connected.Task;
     }
 
     internal void StopDriving(string registrationId)
@@ -49,7 +51,8 @@ internal sealed class TournamentOrchestrator(
 
     internal bool IsActive(string registrationId) => _activeTournaments.ContainsKey(registrationId);
 
-    private async Task DriveAsync(Registration registration, CancellationToken ct)
+    private async Task DriveAsync(
+        Registration registration, TaskCompletionSource connected, CancellationToken ct)
     {
         try
         {
@@ -63,7 +66,8 @@ internal sealed class TournamentOrchestrator(
                 registration.ServerUrl,
                 registration.BotToken,
                 registration.TournamentId,
-                ct))
+                ct,
+                () => connected.TrySetResult()))
             {
                 await HandleTournamentEventAsync(registration, evt, ct);
             }
@@ -78,6 +82,7 @@ internal sealed class TournamentOrchestrator(
         }
         finally
         {
+            connected.TrySetResult();
             registration.Status = "finished";
             registrationStore.Save(registration);
             _activeTournaments.Remove(registration.Id, out _);

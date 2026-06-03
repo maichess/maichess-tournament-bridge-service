@@ -203,16 +203,19 @@ internal static class TournamentEndpoints
 
         try
         {
-            Tournament tournament = await client.StartTournamentAsync(
-                serverUrl, director.DirectorToken, id, ct);
-
+            List<Task> connectTasks = [];
             foreach (Registration reg in store.FindAllByTournament(serverUrl, id)
                 .Where(r => !string.IsNullOrEmpty(r.BotToken)))
             {
                 reg.Status = "active";
                 store.Save(reg);
-                orchestrator.StartDriving(reg);
+                connectTasks.Add(orchestrator.StartDriving(reg));
             }
+
+            await Task.WhenAll(connectTasks);
+
+            Tournament tournament = await client.StartTournamentAsync(
+                serverUrl, director.DirectorToken, id, ct);
 
             return Results.Ok(tournament);
         }
@@ -329,8 +332,15 @@ internal static class TournamentEndpoints
         CancellationToken ct)
     {
         string serverUrl = config.ResolveServerUrl(server);
-        RoundPairingsResponse pairings = await client.GetRoundPairingsAsync(
-            serverUrl, id, round, ct);
+        RoundPairingsResponse pairings;
+        try
+        {
+            pairings = await client.GetRoundPairingsAsync(serverUrl, id, round, ct);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Results.NotFound();
+        }
 
         var mappings = store.FindAllByTournament(serverUrl, id)
             .SelectMany(r => r.GameMappings)
