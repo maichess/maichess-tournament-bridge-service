@@ -188,8 +188,8 @@ internal sealed class TournamentOrchestrator(
                     {
                         string fen = evt.Fen ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
                         long remainingMs = ourColor == "white"
-                            ? (evt.Wtime ?? 300) * 1000L
-                            : (evt.Btime ?? 300) * 1000L;
+                            ? (long)((evt.Clock?.WhiteTime ?? 300) * 1000)
+                            : (long)((evt.Clock?.BlackTime ?? 300) * 1000);
                         int moveCount = evt.Moves?.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
                         long timeLimitMs = GameDriver.ComputeTimeLimitMs(remainingMs, moveCount);
 

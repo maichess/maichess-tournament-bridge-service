@@ -22,8 +22,8 @@ internal static class GameDriver
             _ => evt.Status ?? state.Status,
         };
 
-        long whiteTimeMs = evt.Wtime.HasValue ? evt.Wtime.Value * 1000L : state.WhiteTimeMs;
-        long blackTimeMs = evt.Btime.HasValue ? evt.Btime.Value * 1000L : state.BlackTimeMs;
+        long whiteTimeMs = evt.Clock is not null ? (long)(evt.Clock.WhiteTime * 1000) : state.WhiteTimeMs;
+        long blackTimeMs = evt.Clock is not null ? (long)(evt.Clock.BlackTime * 1000) : state.BlackTimeMs;
 
         return state with
         {

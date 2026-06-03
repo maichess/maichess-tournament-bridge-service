@@ -338,15 +338,17 @@ internal static class TournamentEndpoints
 
         var enriched = pairings.Pairings.Select(p =>
         {
-            string? matchDbId = mappings.FirstOrDefault(m => m.TournamentGameId == p.GameId)
-                ?.MatchDbMatchId;
+            string? gameId = p.Matches.Count > 0 ? p.Matches[0].GameId : null;
+            string? matchDbId = gameId is not null
+                ? mappings.FirstOrDefault(m => m.TournamentGameId == gameId)?.MatchDbMatchId
+                : null;
             return new
             {
                 white = p.White,
                 black = p.Black,
-                gameId = p.GameId,
+                gameId,
                 match_db_id = matchDbId,
-                winner = p.Winner,
+                winner = p.AggregateOutcome,
             };
         });
 

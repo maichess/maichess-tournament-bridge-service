@@ -8,5 +8,4 @@ internal sealed record GameEvent(
     [property: JsonPropertyName("moves")] string? Moves = null,
     [property: JsonPropertyName("status")] string? Status = null,
     [property: JsonPropertyName("winner")] string? Winner = null,
-    [property: JsonPropertyName("wtime")] int? Wtime = null,
-    [property: JsonPropertyName("btime")] int? Btime = null);
+    [property: JsonPropertyName("clock")] GameClock? Clock = null);
