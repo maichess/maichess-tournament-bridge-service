@@ -276,6 +276,7 @@ internal static class TournamentEndpoints
             Status = "registered",
             DirectorToken = string.Empty,
             BotToken = botIdentity.Token,
+            TournamentBotId = botIdentity.Id,
         });
 
         return Results.Ok(new

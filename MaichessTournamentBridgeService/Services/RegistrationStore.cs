@@ -33,6 +33,13 @@ internal sealed class RegistrationStore
             && r.TournamentId == tournamentId
             && r.MaichessBotId == botId);
 
+    internal Registration? FindByTournamentBotId(
+        string serverUrl, string tournamentId, string tournamentBotId) =>
+        _registrations.Values.FirstOrDefault(r =>
+            r.ServerUrl == serverUrl
+            && r.TournamentId == tournamentId
+            && r.TournamentBotId == tournamentBotId);
+
     internal IReadOnlyList<Registration> GetAll() => [.. _registrations.Values];
 
     internal void AddGameMapping(string registrationId, GameMapping mapping)

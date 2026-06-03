@@ -17,6 +17,7 @@ internal sealed class TournamentOrchestrator(
 {
     private readonly Dictionary<string, CancellationTokenSource> _activeTournaments = [];
     private readonly ConcurrentDictionary<string, string> _gameOwners = new();
+    private readonly ConcurrentDictionary<string, (string WhiteBotId, string BlackBotId)> _roundPairings = new();
 
     internal static bool IsOurTurn(GameEvent evt, string ourColor)
     {
@@ -94,10 +95,26 @@ internal sealed class TournamentOrchestrator(
     {
         switch (evt.Type)
         {
+            case "roundStarted":
+                await LoadRoundPairingsAsync(registration, evt.Round, ct);
+                break;
+
             case "gameStart":
                 if (evt.GameId is not null && evt.Color is not null)
                 {
-                    await HandleGameStartAsync(registration, evt.GameId, evt.Color, ct);
+                    if (!IsGameForBot(registration, evt.GameId, evt.Color))
+                    {
+                        logger.LogDebug(
+                            "Ignoring gameStart for {GameId} color {Color} — not for bot {BotId}",
+                            evt.GameId,
+                            evt.Color,
+                            registration.TournamentBotId);
+                        break;
+                    }
+
+                    _ = Task.Run(
+                        () => HandleGameStartAsync(registration, evt.GameId, evt.Color, ct),
+                        CancellationToken.None);
                 }
 
                 break;
@@ -109,12 +126,57 @@ internal sealed class TournamentOrchestrator(
         }
     }
 
+    private async Task LoadRoundPairingsAsync(
+        Registration registration, int round, CancellationToken ct)
+    {
+        try
+        {
+            RoundPairingsResponse pairings = await tournamentClient.GetRoundPairingsAsync(
+                registration.ServerUrl, registration.TournamentId, round, ct);
+
+            foreach (TournamentPairing pairing in pairings.Pairings)
+            {
+                if (pairing.Matches.Count > 0)
+                {
+                    string gameId = pairing.Matches[0].GameId;
+                    _roundPairings[gameId] = (pairing.White.Id, pairing.Black.Id);
+                    logger.LogInformation(
+                        "Round {Round} pairing: {GameId} white={White} black={Black}",
+                        round,
+                        gameId,
+                        pairing.White.Id,
+                        pairing.Black.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to load round {Round} pairings", round);
+        }
+    }
+
+    private bool IsGameForBot(Registration registration, string gameId, string color)
+    {
+        if (!_roundPairings.TryGetValue(
+            gameId, out (string WhiteBotId, string BlackBotId) pairing))
+        {
+            logger.LogWarning(
+                "No pairing data for game {GameId}, allowing bot {BotId} to proceed",
+                gameId,
+                registration.TournamentBotId);
+            return true;
+        }
+
+        string expectedBotId = color == "white" ? pairing.WhiteBotId : pairing.BlackBotId;
+        return expectedBotId == registration.TournamentBotId;
+    }
+
     private async Task HandleGameStartAsync(
         Registration registration, string gameId, string ourColor, CancellationToken ct)
     {
         bool isOwner = _gameOwners.TryAdd(gameId, registration.Id);
 
-        Registration? opponentReg = FindOpponentRegistration(registration, gameId);
+        Registration? opponentReg = FindOpponentRegistration(registration, gameId, ourColor);
         string opponentBotId = opponentReg?.MaichessBotId ?? string.Empty;
 
         if (isOwner)
@@ -165,13 +227,21 @@ internal sealed class TournamentOrchestrator(
         }
     }
 
-    private Registration? FindOpponentRegistration(Registration self, string gameId)
+    private Registration? FindOpponentRegistration(
+        Registration self, string gameId, string ourColor)
     {
-        return registrationStore.FindAllByTournament(self.ServerUrl, self.TournamentId)
-            .FirstOrDefault(r =>
-                r.Id != self.Id
-                && !string.IsNullOrEmpty(r.BotToken)
-                && r.Status is "registered" or "active");
+        if (!_roundPairings.TryGetValue(
+            gameId, out (string WhiteBotId, string BlackBotId) pairing))
+        {
+            return null;
+        }
+
+        string opponentTournamentBotId = ourColor == "white"
+            ? pairing.BlackBotId
+            : pairing.WhiteBotId;
+
+        return registrationStore.FindByTournamentBotId(
+            self.ServerUrl, self.TournamentId, opponentTournamentBotId);
     }
 
     private async Task DriveNonOwnerGameAsync(

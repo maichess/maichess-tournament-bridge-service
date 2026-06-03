@@ -20,6 +20,8 @@ internal sealed class Registration
 
     public required string BotToken { get; set; }
 
+    public string TournamentBotId { get; set; } = string.Empty;
+
     public List<GameMapping> GameMappings { get; set; } = [];
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
