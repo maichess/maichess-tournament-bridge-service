@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Grpc.Core;
 using Maichess.Engine.V1;
 using Maichess.MatchManager.V1;
@@ -15,6 +16,14 @@ internal sealed class TournamentOrchestrator(
     ILogger<TournamentOrchestrator> logger)
 {
     private readonly Dictionary<string, CancellationTokenSource> _activeTournaments = [];
+    private readonly ConcurrentDictionary<string, string> _gameOwners = new();
+
+    internal static bool IsOurTurn(GameEvent evt, string ourColor)
+    {
+        int moveCount = evt.Moves?.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
+        bool isWhiteTurn = moveCount % 2 == 0;
+        return (ourColor == "white" && isWhiteTurn) || (ourColor == "black" && !isWhiteTurn);
+    }
 
     internal void StartDriving(Registration registration)
     {
@@ -45,8 +54,9 @@ internal sealed class TournamentOrchestrator(
         try
         {
             logger.LogInformation(
-                "Starting tournament drive for {TournamentId} on {ServerUrl}",
+                "Starting tournament drive for {TournamentId} bot {BotId} on {ServerUrl}",
                 registration.TournamentId,
+                registration.MaichessBotId,
                 registration.ServerUrl);
 
             await foreach (TournamentEvent evt in tournamentClient.StreamTournamentAsync(
@@ -97,27 +107,125 @@ internal sealed class TournamentOrchestrator(
     private async Task HandleGameStartAsync(
         Registration registration, string gameId, string ourColor, CancellationToken ct)
     {
-        logger.LogInformation(
-            "Game {GameId} started, playing as {Color}", gameId, ourColor);
+        bool isOwner = _gameOwners.TryAdd(gameId, registration.Id);
 
-        string matchDbId = await CreateExternalMatchAsync(registration, gameId, ourColor, ct);
-        registrationStore.AddGameMapping(
-            registration.Id,
-            new GameMapping { TournamentGameId = gameId, MatchDbMatchId = matchDbId });
+        Registration? opponentReg = FindOpponentRegistration(registration, gameId);
+        string opponentBotId = opponentReg?.MaichessBotId ?? string.Empty;
 
-        var state = new GameDriverState(
-            registration.TournamentId,
-            gameId,
-            matchDbId,
-            ourColor,
-            registration.BotToken,
-            [],
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "ongoing",
-            300_000,
-            300_000);
+        if (isOwner)
+        {
+            logger.LogInformation(
+                "Game {GameId} started, bot {BotId} playing as {Color} (owner)",
+                gameId,
+                registration.MaichessBotId,
+                ourColor);
 
-        await DriveGameAsync(registration, state, ct);
+            string matchDbId = await CreateExternalMatchAsync(
+                registration, gameId, ourColor, opponentBotId, ct);
+
+            registrationStore.AddGameMapping(
+                registration.Id,
+                new GameMapping { TournamentGameId = gameId, MatchDbMatchId = matchDbId });
+
+            if (opponentReg is not null)
+            {
+                registrationStore.AddGameMapping(
+                    opponentReg.Id,
+                    new GameMapping { TournamentGameId = gameId, MatchDbMatchId = matchDbId });
+            }
+
+            var state = new GameDriverState(
+                registration.TournamentId,
+                gameId,
+                matchDbId,
+                ourColor,
+                registration.BotToken,
+                [],
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                "ongoing",
+                300_000,
+                300_000);
+
+            await DriveGameAsync(registration, state, ct);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Game {GameId} started, bot {BotId} playing as {Color} (driven by sibling)",
+                gameId,
+                registration.MaichessBotId,
+                ourColor);
+
+            await DriveNonOwnerGameAsync(registration, gameId, ourColor, ct);
+        }
+    }
+
+    private Registration? FindOpponentRegistration(Registration self, string gameId)
+    {
+        return registrationStore.FindAllByTournament(self.ServerUrl, self.TournamentId)
+            .FirstOrDefault(r =>
+                r.Id != self.Id
+                && !string.IsNullOrEmpty(r.BotToken)
+                && r.Status is "registered" or "active");
+    }
+
+    private async Task DriveNonOwnerGameAsync(
+        Registration registration, string gameId, string ourColor, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
+                registration.ServerUrl,
+                registration.BotToken,
+                registration.TournamentId,
+                gameId,
+                ct))
+            {
+                if (evt.Type == "gameState" || evt.Type == "move")
+                {
+                    bool isOurTurn = IsOurTurn(evt, ourColor);
+                    if (isOurTurn)
+                    {
+                        string fen = evt.Fen ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+                        long remainingMs = ourColor == "white"
+                            ? (evt.Wtime ?? 300) * 1000L
+                            : (evt.Btime ?? 300) * 1000L;
+                        int moveCount = evt.Moves?.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
+                        long timeLimitMs = GameDriver.ComputeTimeLimitMs(remainingMs, moveCount);
+
+                        string move = (await engineClient.GetBestMoveAsync(
+                            new GetBestMoveRequest
+                            {
+                                BotId = registration.MaichessBotId,
+                                Fen = fen,
+                                TimeLimitMs = (uint)timeLimitMs,
+                            },
+                            cancellationToken: ct)).Move;
+
+                        await tournamentClient.SubmitMoveAsync(
+                            registration.ServerUrl,
+                            registration.BotToken,
+                            registration.TournamentId,
+                            gameId,
+                            move,
+                            ct);
+                    }
+                }
+
+                if (evt.Type == "gameEnd")
+                {
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Non-owner game drive failed for {GameId} bot {BotId}",
+                gameId,
+                registration.MaichessBotId);
+        }
     }
 
     private async Task DriveGameAsync(
@@ -163,6 +271,10 @@ internal sealed class TournamentOrchestrator(
         {
             logger.LogError(ex, "Game drive failed for {GameId}", state.GameId);
         }
+        finally
+        {
+            _gameOwners.TryRemove(state.GameId, out _);
+        }
     }
 
     private async Task<string> GetEngineMoveAsync(
@@ -184,14 +296,27 @@ internal sealed class TournamentOrchestrator(
     }
 
     private async Task<string> CreateExternalMatchAsync(
-        Registration registration, string gameId, string ourColor, CancellationToken ct)
+        Registration registration, string gameId, string ourColor, string opponentBotId, CancellationToken ct)
     {
-        Player white = ourColor == "white"
-            ? new Player { BotId = registration.MaichessBotId }
-            : new Player { ExternalName = "Opponent" };
-        Player black = ourColor == "black"
-            ? new Player { BotId = registration.MaichessBotId }
-            : new Player { ExternalName = "Opponent" };
+        bool opponentIsOurs = !string.IsNullOrEmpty(opponentBotId);
+
+        Player white;
+        Player black;
+
+        if (ourColor == "white")
+        {
+            white = new Player { BotId = registration.MaichessBotId };
+            black = opponentIsOurs
+                ? new Player { BotId = opponentBotId }
+                : new Player { ExternalName = "Opponent" };
+        }
+        else
+        {
+            white = opponentIsOurs
+                ? new Player { BotId = opponentBotId }
+                : new Player { ExternalName = "Opponent" };
+            black = new Player { BotId = registration.MaichessBotId };
+        }
 
         CreateMatchResponse response = await matchManagerClient.CreateMatchAsync(
             new CreateMatchRequest
