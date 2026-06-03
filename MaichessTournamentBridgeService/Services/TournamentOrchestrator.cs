@@ -209,28 +209,6 @@ internal sealed class TournamentOrchestrator(
                 300_000,
                 300_000);
 
-            if (state.IsOurTurn)
-            {
-                string openingMove = await GetEngineMoveAsync(
-                    registration.MaichessBotId, state, ct);
-                await tournamentClient.SubmitMoveAsync(
-                    registration.ServerUrl,
-                    registration.BotToken,
-                    registration.TournamentId,
-                    gameId,
-                    openingMove,
-                    ct);
-
-                // We submit the opening move before subscribing to the game
-                // stream, so we never receive our own move event for it. Record
-                // it here so the move list and turn stay accurate.
-                state = state with
-                {
-                    Moves = [.. state.Moves, openingMove],
-                    TurnColor = ourColor == "white" ? "black" : "white",
-                };
-            }
-
             await DriveGameAsync(registration, state, ct);
         }
         else
@@ -267,35 +245,13 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
-            if (ourColor == "white")
-            {
-                string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-                long timeLimitMs = GameDriver.ComputeTimeLimitMs(300_000, 0);
-
-                string openingMove = (await engineClient.GetBestMoveAsync(
-                    new GetBestMoveRequest
-                    {
-                        BotId = registration.MaichessBotId,
-                        Fen = fen,
-                        TimeLimitMs = (uint)timeLimitMs,
-                    },
-                    cancellationToken: ct)).Move;
-
-                await tournamentClient.SubmitMoveAsync(
-                    registration.ServerUrl,
-                    registration.BotToken,
-                    registration.TournamentId,
-                    gameId,
-                    openingMove,
-                    ct);
-            }
-
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
                 registration.TournamentId,
                 gameId,
-                ct))
+                ct,
+                onConnected: () => SubmitNonOwnerOpeningMoveAsync(registration, gameId, ourColor, ct)))
             {
                 if (evt.Type == "gameState" || evt.Type == "move")
                 {
@@ -347,6 +303,7 @@ internal sealed class TournamentOrchestrator(
     private async Task DriveGameAsync(
         Registration registration, GameDriverState state, CancellationToken ct)
     {
+        GameDriverState opening = state;
         try
         {
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
@@ -354,7 +311,8 @@ internal sealed class TournamentOrchestrator(
                 registration.BotToken,
                 registration.TournamentId,
                 state.GameId,
-                ct))
+                ct,
+                onConnected: () => SubmitOpeningMoveAsync(registration, opening, ct)))
             {
                 state = GameDriver.ApplyGameEvent(state, evt);
                 GameDriverAction action = GameDriver.DetermineAction(state);
@@ -391,6 +349,53 @@ internal sealed class TournamentOrchestrator(
         {
             _gameOwners.TryRemove(state.GameId, out _);
         }
+    }
+
+    private async Task SubmitOpeningMoveAsync(
+        Registration registration, GameDriverState state, CancellationToken ct)
+    {
+        if (!state.IsOurTurn)
+        {
+            return;
+        }
+
+        string openingMove = await GetEngineMoveAsync(registration.MaichessBotId, state, ct);
+        await tournamentClient.SubmitMoveAsync(
+            registration.ServerUrl,
+            state.OurBotToken,
+            state.TournamentId,
+            state.GameId,
+            openingMove,
+            ct);
+    }
+
+    private async Task SubmitNonOwnerOpeningMoveAsync(
+        Registration registration, string gameId, string ourColor, CancellationToken ct)
+    {
+        if (ourColor != "white")
+        {
+            return;
+        }
+
+        string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        long timeLimitMs = GameDriver.ComputeTimeLimitMs(300_000, 0);
+
+        string openingMove = (await engineClient.GetBestMoveAsync(
+            new GetBestMoveRequest
+            {
+                BotId = registration.MaichessBotId,
+                Fen = fen,
+                TimeLimitMs = (uint)timeLimitMs,
+            },
+            cancellationToken: ct)).Move;
+
+        await tournamentClient.SubmitMoveAsync(
+            registration.ServerUrl,
+            registration.BotToken,
+            registration.TournamentId,
+            gameId,
+            openingMove,
+            ct);
     }
 
     private async Task<string> GetEngineMoveAsync(

@@ -174,7 +174,8 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         string token,
         string tournamentId,
         string gameId,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        Func<Task>? onConnected = null)
     {
         using HttpRequestMessage request = new(
             HttpMethod.Get,
@@ -185,6 +186,15 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         using HttpResponseMessage response = await httpClient.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
+
+        // The game-event subscription is registered server-side by the time the
+        // response headers arrive, so any move published from here on is queued
+        // for us. Play our opening move now — before reading the stream — so a
+        // fast opponent reply cannot slip through before we are listening.
+        if (onConnected is not null)
+        {
+            await onConnected();
+        }
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
         using StreamReader reader = new(stream);
