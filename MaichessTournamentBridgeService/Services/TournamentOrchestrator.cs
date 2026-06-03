@@ -213,6 +213,19 @@ internal sealed class TournamentOrchestrator(
                 300_000,
                 300_000);
 
+            if (state.IsOurTurn)
+            {
+                string openingMove = await GetEngineMoveAsync(
+                    registration.MaichessBotId, state, ct);
+                await tournamentClient.SubmitMoveAsync(
+                    registration.ServerUrl,
+                    registration.BotToken,
+                    registration.TournamentId,
+                    gameId,
+                    openingMove,
+                    ct);
+            }
+
             await DriveGameAsync(registration, state, ct);
         }
         else
@@ -249,6 +262,29 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
+            if (ourColor == "white")
+            {
+                string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+                long timeLimitMs = GameDriver.ComputeTimeLimitMs(300_000, 0);
+
+                string openingMove = (await engineClient.GetBestMoveAsync(
+                    new GetBestMoveRequest
+                    {
+                        BotId = registration.MaichessBotId,
+                        Fen = fen,
+                        TimeLimitMs = (uint)timeLimitMs,
+                    },
+                    cancellationToken: ct)).Move;
+
+                await tournamentClient.SubmitMoveAsync(
+                    registration.ServerUrl,
+                    registration.BotToken,
+                    registration.TournamentId,
+                    gameId,
+                    openingMove,
+                    ct);
+            }
+
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
