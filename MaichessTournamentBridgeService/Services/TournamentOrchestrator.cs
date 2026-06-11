@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using Grpc.Core;
-using Maichess.Engine.V1;
 using Maichess.MatchManager.V1;
 using MaichessTournamentBridgeService.Clients;
 using MaichessTournamentBridgeService.Models;
@@ -11,7 +10,7 @@ namespace MaichessTournamentBridgeService.Services;
 internal sealed class TournamentOrchestrator(
     TournamentServerClient tournamentClient,
     Matches.MatchesClient matchManagerClient,
-    Bots.BotsClient engineClient,
+    IEngineMoveSource engineMoveSource,
     RegistrationStore registrationStore,
     ILogger<TournamentOrchestrator> logger)
 {
@@ -265,14 +264,8 @@ internal sealed class TournamentOrchestrator(
                         int moveCount = evt.Moves?.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
                         long timeLimitMs = GameDriver.ComputeTimeLimitMs(remainingMs, moveCount);
 
-                        string move = (await engineClient.GetBestMoveAsync(
-                            new GetBestMoveRequest
-                            {
-                                BotId = registration.MaichessBotId,
-                                Fen = fen,
-                                TimeLimitMs = (uint)timeLimitMs,
-                            },
-                            cancellationToken: ct)).Move;
+                        string move = await engineMoveSource.GetBestMoveAsync(
+                            registration.MaichessBotId, fen, (int)timeLimitMs, ct);
 
                         await tournamentClient.SubmitMoveAsync(
                             registration.ServerUrl,
@@ -380,14 +373,8 @@ internal sealed class TournamentOrchestrator(
         string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
         long timeLimitMs = GameDriver.ComputeTimeLimitMs(300_000, 0);
 
-        string openingMove = (await engineClient.GetBestMoveAsync(
-            new GetBestMoveRequest
-            {
-                BotId = registration.MaichessBotId,
-                Fen = fen,
-                TimeLimitMs = (uint)timeLimitMs,
-            },
-            cancellationToken: ct)).Move;
+        string openingMove = await engineMoveSource.GetBestMoveAsync(
+            registration.MaichessBotId, fen, (int)timeLimitMs, ct);
 
         await tournamentClient.SubmitMoveAsync(
             registration.ServerUrl,
@@ -404,16 +391,8 @@ internal sealed class TournamentOrchestrator(
         long remainingMs = state.OurColor == "white" ? state.WhiteTimeMs : state.BlackTimeMs;
         long timeLimitMs = GameDriver.ComputeTimeLimitMs(remainingMs, state.Moves.Count);
 
-        GetBestMoveResponse response = await engineClient.GetBestMoveAsync(
-            new GetBestMoveRequest
-            {
-                BotId = botId,
-                Fen = state.CurrentFen,
-                TimeLimitMs = (uint)timeLimitMs,
-            },
-            cancellationToken: ct);
-
-        return response.Move;
+        return await engineMoveSource.GetBestMoveAsync(
+            botId, state.CurrentFen, (int)timeLimitMs, ct);
     }
 
     private async Task<string> CreateExternalMatchAsync(

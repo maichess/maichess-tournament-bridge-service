@@ -3,6 +3,7 @@ using Grpc.Net.Client;
 using Maichess.Engine.V1;
 using Maichess.MatchManager.V1;
 using MaichessTournamentBridgeService.Clients;
+using MaichessTournamentBridgeService.Kafka;
 using MaichessTournamentBridgeService.Rest;
 using MaichessTournamentBridgeService.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -33,6 +34,14 @@ string defaultServerUrl = builder.Configuration["TournamentServer:DefaultUrl"]
 builder.Services.AddSingleton(new BridgeConfig(defaultServerUrl));
 builder.Services.AddSingleton<RegistrationStore>();
 builder.Services.AddSingleton<TournamentOrchestrator>();
+
+// Engine bot moves over Kafka (Kafka task 09 retired the synchronous Engine.GetBestMove
+// gRPC call): requests go to engine.commands.v1 and replies arrive on engine.events.v1,
+// correlated by request_id through the shared PendingBotMoves registry. ListBots stays on
+// the Bots gRPC client above.
+builder.Services.AddSingleton<PendingBotMoves>();
+builder.Services.AddSingleton<IEngineMoveSource, KafkaEngineMoveSource>();
+builder.Services.AddHostedService<EngineEventConsumer>();
 
 // JWT authentication
 string jwtKey = builder.Configuration["Jwt:Key"]

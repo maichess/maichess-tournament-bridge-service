@@ -15,7 +15,8 @@ Implement against these contracts exactly. Document any blocker in `CONTRACT_NOT
 
 - **Runtime:** ASP.NET (net10.0), C#, nullable enabled
 - **Tournament server communication:** HTTP client (NDJSON streaming, form-encoded requests)
-- **RPC:** gRPC clients (Match Manager, Engine) via `Maichess.PlatformProtos`
+- **RPC:** gRPC clients (Match Manager: CreateMatch/SyncExternalMatch; Engine: ListBots) via `Maichess.PlatformProtos`
+- **Kafka:** bot-move request/reply over `engine.commands.v1` / `engine.events.v1` (Confluent.Kafka, raw Protobuf)
 - **Real-time:** SSE (Server-Sent Events) to browser clients; NDJSON from tournament server
 
 ## Structure
@@ -31,7 +32,7 @@ MaichessTournamentBridgeService/
 
 ## Key Design Decisions
 
-- **Engine-drives/we-mirror model:** The bridge opens the tournament game stream, calls Engine `GetBestMove` for each of our turns, submits moves to the tournament server, and creates/syncs `external` matches in match-db so the existing Watch/Past Matches UI works.
+- **Engine-drives/we-mirror model:** The bridge opens the tournament game stream, requests a bot move for each of our turns over Kafka (`IEngineMoveSource` → `BotMoveRequested` to `engine.commands.v1`, await the correlated `BotMoveCalculated` on `engine.events.v1`; Kafka task 09 replaced the synchronous `Engine.GetBestMove` gRPC call), submits moves to the tournament server, and creates/syncs `external` matches in match-db so the existing Watch/Past Matches UI works. See `CONTRACT_NOTES.md`.
 - **Pure vs IO boundaries:** `GameDriver` is a pure static class (no network, no state) that determines actions from game state. `TournamentOrchestrator` handles all IO (gRPC, HTTP, persistence). This makes the core logic unit-testable without mocking.
 - **Registration store:** In-memory `ConcurrentDictionary` for tournament registrations and game mappings. Each registration tracks the director token, bot token, and match-db mappings.
 - **Provider auth:** The bridge registers identities on the tournament server via `POST /api/auth/register`, receiving JWTs. For the maichess deployment, the tournament server uses a shared `TOURNAMENT_JWT_SECRET`. For external servers, users provide the secret.
@@ -59,7 +60,7 @@ MaichessTournamentBridgeService/
 ## Dependencies
 
 - **Match Manager (gRPC):** `CreateMatch` to create external matches, `SyncExternalMatch` to update them
-- **Engine (gRPC):** `GetBestMove` to drive bot moves, `ListBots` to list available bots
+- **Engine:** bot moves over Kafka (`engine.commands.v1` → `engine.events.v1`); `ListBots` over gRPC to list available bots
 - **Tournament Server (HTTP):** Full lifecycle — register, create, join, start, stream, move, results
 
 ## Entity Framework Rules
