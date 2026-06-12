@@ -7,3 +7,9 @@ riderModule.iml
 .idea
 .env
 Load-Env.ps1
+
+# Mutation testing & coverage output
+StrykerOutput/
+**/coverage*.json
+**/coverage*.cobertura.xml
+**/cov*.xml

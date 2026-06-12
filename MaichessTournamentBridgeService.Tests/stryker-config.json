@@ -1,0 +1,35 @@
+{
+  "stryker-config": {
+    "project": "MaichessTournamentBridgeService.csproj",
+    "solution": "../maichess-tournament-bridge-service.sln",
+    "test-projects": [
+      "MaichessTournamentBridgeService.Tests.csproj"
+    ],
+    "reporters": [
+      "progress",
+      "html"
+    ],
+    "mutation-level": "Standard",
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 0
+    },
+    "mutate": [
+      "!**/Program.cs",
+      "!**/*.g.cs",
+      "!**/*.generated.cs",
+      "!**/Clients/**",
+      "!**/Kafka/**",
+      "!**/Rest/**",
+      "!**/Providers/Lichess/LichessProvider.cs",
+      "!**/Services/TournamentOrchestrator.cs",
+      "!**/Services/MatchManagerMatchMirror.cs",
+      "!**/Services/EngineBotCatalog.cs"
+    ],
+    "ignore-methods": [
+      "*Log*",
+      "Console.Write*"
+    ]
+  }
+}

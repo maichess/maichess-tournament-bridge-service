@@ -1,6 +1,6 @@
 # Tournament Bridge Service
 
-Proxies tournament lifecycle to an external tournament server, registers a maichess bot to play, drives moves via the Engine service, and mirrors each game into match-db as a read-only `external` match. The bridge is the only maichess service that communicates with external tournament servers.
+Bridges maichess bots into external chess providers behind the `IExternalProvider` seam, drives moves via the Engine service (engine-drives/we-mirror), and mirrors each game into match-db as a read-only `external` match. Two providers: the **tournament-server** (full tournament lifecycle) and **Lichess** (single game via the Bot API). The bridge is the only maichess service that communicates with external providers.
 
 ## Contracts
 
@@ -23,16 +23,22 @@ Implement against these contracts exactly. Document any blocker in `CONTRACT_NOT
 
 ```
 MaichessTournamentBridgeService/
+  Chess/           # ChessPosition: pure UCI-move → FEN replay (for providers that don't send FEN, e.g. Lichess)
   Clients/         # HTTP client for tournament server API
-  Models/          # DTOs for tournament server responses and bridge persistence
-  Rest/            # REST endpoint handlers
-  Services/        # Core orchestration: GameDriver (pure), TournamentOrchestrator, BridgeConfig, RegistrationStore
+  Models/          # DTOs for provider responses; GameUpdate (provider-normalized snapshot); bridge persistence
+  Providers/       # IExternalProvider seam + ExternalGameRef; Lichess/ (LichessProvider IO, LichessEventParser pure, LichessStatus)
+  Rest/            # REST endpoint handlers (TournamentEndpoints, ExternalGameEndpoints)
+  Services/        # Core orchestration: GameDriver (pure), TournamentOrchestrator, LichessGameBridge,
+                   #   LichessRegistrationService, mirror/catalog seams, BridgeConfig, RegistrationStore
   Program.cs       # DI wiring, Kestrel config
 ```
 
 ## Key Design Decisions
 
-- **Engine-drives/we-mirror model:** The bridge opens the tournament game stream, requests a bot move for each of our turns over Kafka (`IEngineMoveSource` → `BotMoveRequested` to `engine.commands.v1`, await the correlated `BotMoveCalculated` on `engine.events.v1`; Kafka task 09 replaced the synchronous `Engine.GetBestMove` gRPC call), submits moves to the tournament server, and creates/syncs `external` matches in match-db so the existing Watch/Past Matches UI works. See `CONTRACT_NOTES.md`.
+- **Engine-drives/we-mirror model:** The bridge opens the provider game stream, requests a bot move for each of our turns over Kafka (`IEngineMoveSource` → `BotMoveRequested` to `engine.commands.v1`, await the correlated `BotMoveCalculated` on `engine.events.v1`; Kafka task 09 replaced the synchronous `Engine.GetBestMove` gRPC call), submits moves to the provider, and creates/syncs `external` matches in match-db so the existing Watch/Past Matches UI works. See `CONTRACT_NOTES.md`.
+- **Provider seam (`IExternalProvider`):** `Name`, `StreamGameAsync → IAsyncEnumerable<GameUpdate>`, `SubmitMoveAsync`. Each provider normalizes its wire format into `GameUpdate` (ms clocks). The tournament-server path predates the seam and keeps its `TournamentOrchestrator`; **Lichess** is implemented fully behind it (`LichessProvider` + `LichessGameBridge`). `GameDriver` (the pure action/decision logic) is reused untouched by both.
+- **Lichess specifics:** the Bot API stream (`gameFull` then `gameState`) carries **no FEN** — the position is rebuilt from `initialFen` + the UCI move list with the pure `ChessPosition` (castling rights/en passant/move counters). Clocks are **already milliseconds** and pass through with no `*1000`. `LichessEventParser` (pure, 100% covered) does the NDJSON→`GameUpdate` translation; `LichessProvider` (typed `HttpClient`, `[ExcludeFromCodeCoverage]`) is the only IO. `LichessGameBridge` drives one game and creates the mirror match from the first `gameFull` so registration returns a watchable `match_id` immediately. Mirroring goes through `IExternalMatchMirror` (create + sync only, **no result-recording** → unrated by construction).
+- **Two Lichess entry points** (`LichessRegistrationService`): `POST /external/lichess` attaches to an existing `game_id`; `POST /external/lichess/challenge` *creates* the game via `ILichessChallenger` (`POST /api/challenge/{user}` or `/api/challenge/ai`, pure request/response handling in `LichessChallengeBuilder`) then drives the returned id. Challenge clock inputs are **seconds**; AI games start immediately, user challenges start on accept (the game-stream connect retries on 404 to bridge the acceptance gap).
 - **Pure vs IO boundaries:** `GameDriver` is a pure static class (no network, no state) that determines actions from game state. `TournamentOrchestrator` handles all IO (gRPC, HTTP, persistence). This makes the core logic unit-testable without mocking.
 - **Registration store:** In-memory `ConcurrentDictionary` for tournament registrations and game mappings. Each registration tracks the director token, bot token, and match-db mappings.
 - **Provider auth:** The bridge registers identities on the tournament server via `POST /api/auth/register`, receiving JWTs. For the maichess deployment, the tournament server uses a shared `TOURNAMENT_JWT_SECRET`. For external servers, users provide the secret.
@@ -59,9 +65,10 @@ MaichessTournamentBridgeService/
 
 ## Dependencies
 
-- **Match Manager (gRPC):** `CreateMatch` to create external matches, `SyncExternalMatch` to update them
-- **Engine:** bot moves over Kafka (`engine.commands.v1` → `engine.events.v1`); `ListBots` over gRPC to list available bots
+- **Match Manager (gRPC):** `CreateMatch` to create external matches, `SyncExternalMatch` to update them (via `IExternalMatchMirror`)
+- **Engine:** bot moves over Kafka (`engine.commands.v1` → `engine.events.v1`); `ListBots` over gRPC to list available bots / validate a bot id (via `IBotCatalog`)
 - **Tournament Server (HTTP):** Full lifecycle — register, create, join, start, stream, move, results
+- **Lichess Bot API (HTTP):** `GET /api/account`, `GET /api/bot/game/stream/{id}` (NDJSON), `POST /api/bot/game/{id}/move/{uci}`, `POST /api/challenge/{user}` / `POST /api/challenge/ai`; per-game bot OAuth token. Base URL configurable via `Lichess:ApiUrl` / `LICHESS_API_URL` (default `https://lichess.org`).
 
 ## Entity Framework Rules
 

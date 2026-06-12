@@ -4,6 +4,8 @@ using Maichess.Engine.V1;
 using Maichess.MatchManager.V1;
 using MaichessTournamentBridgeService.Clients;
 using MaichessTournamentBridgeService.Kafka;
+using MaichessTournamentBridgeService.Providers;
+using MaichessTournamentBridgeService.Providers.Lichess;
 using MaichessTournamentBridgeService.Rest;
 using MaichessTournamentBridgeService.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -27,6 +29,23 @@ builder.Services.AddSingleton(
 
 // HTTP client for tournament server
 builder.Services.AddHttpClient<TournamentServerClient>();
+
+// Lichess provider (engine-drives/we-mirror, single game per registration). The bot
+// OAuth token is per-game, so the typed HttpClient is a stateless singleton.
+string lichessApiUrl = builder.Configuration["Lichess:ApiUrl"]
+    ?? Environment.GetEnvironmentVariable("LICHESS_API_URL")
+    ?? "https://lichess.org";
+builder.Services.AddHttpClient(
+    LichessProvider.HttpClientName, c => c.BaseAddress = new Uri(lichessApiUrl));
+builder.Services.AddSingleton(sp => new LichessProvider(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient(LichessProvider.HttpClientName)));
+builder.Services.AddSingleton<IExternalProvider>(sp => sp.GetRequiredService<LichessProvider>());
+builder.Services.AddSingleton<ILichessChallenger>(sp => sp.GetRequiredService<LichessProvider>());
+builder.Services.AddSingleton<IExternalMatchMirror, MatchManagerMatchMirror>();
+builder.Services.AddSingleton<IBotCatalog, EngineBotCatalog>();
+builder.Services.AddSingleton<LichessGameBridge>();
+builder.Services.AddSingleton<ILichessBridgeLauncher>(sp => sp.GetRequiredService<LichessGameBridge>());
+builder.Services.AddSingleton<LichessRegistrationService>();
 
 // Application services
 string defaultServerUrl = builder.Configuration["TournamentServer:DefaultUrl"]
@@ -92,5 +111,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapTournamentEndpoints();
+app.MapExternalGameEndpoints();
 
 app.Run();
