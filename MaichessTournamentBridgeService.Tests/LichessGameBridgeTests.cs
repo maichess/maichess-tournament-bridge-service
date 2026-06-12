@@ -23,7 +23,7 @@ public sealed class LichessGameBridgeTests
 
     private static LichessGameBridge Bridge(
         IExternalProvider provider, FakeEngineMoveSource engine, FakeMatchMirror mirror) =>
-        new(provider, engine, mirror, NullLogger<LichessGameBridge>.Instance);
+        new(provider, engine, mirror, new FakeApplicationLifetime(), NullLogger<LichessGameBridge>.Instance);
 
     [Fact]
     internal async Task Drive_AsWhite_CreatesMatchPlaysAndMirrors()

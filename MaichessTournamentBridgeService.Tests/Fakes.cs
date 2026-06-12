@@ -3,8 +3,23 @@ using MaichessTournamentBridgeService.Models;
 using MaichessTournamentBridgeService.Providers;
 using MaichessTournamentBridgeService.Providers.Lichess;
 using MaichessTournamentBridgeService.Services;
+using Microsoft.Extensions.Hosting;
 
 namespace MaichessTournamentBridgeService.Tests;
+
+// A host lifetime whose tokens never fire — the drive loop runs to completion under it.
+internal sealed class FakeApplicationLifetime : IHostApplicationLifetime
+{
+    public CancellationToken ApplicationStarted => CancellationToken.None;
+
+    public CancellationToken ApplicationStopping => CancellationToken.None;
+
+    public CancellationToken ApplicationStopped => CancellationToken.None;
+
+    public void StopApplication()
+    {
+    }
+}
 
 // Hand-written fakes for the bridge/registration seams. The codebase tests pure logic
 // without a mocking framework; these keep that style.

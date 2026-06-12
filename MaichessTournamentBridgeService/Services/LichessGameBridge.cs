@@ -2,6 +2,7 @@ using Maichess.MatchManager.V1;
 using MaichessTournamentBridgeService.Models;
 using MaichessTournamentBridgeService.Providers;
 using MaichessTournamentBridgeService.Providers.Lichess;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace MaichessTournamentBridgeService.Services;
@@ -15,14 +16,23 @@ internal sealed class LichessGameBridge(
     IExternalProvider provider,
     IEngineMoveSource engine,
     IExternalMatchMirror mirror,
+    IHostApplicationLifetime lifetime,
     ILogger<LichessGameBridge> logger) : ILichessBridgeLauncher
 {
     public Task<string> StartAsync(string botId, string token, string gameId, CancellationToken ct)
     {
         var ready = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var game = new ExternalGameRef(gameId, token);
-        _ = Task.Run(() => DriveAsync(game, botId, ready, ct), CancellationToken.None);
-        return ready.Task;
+
+        // The game outlives the HTTP request that started it. Drive it under the
+        // application lifetime, NOT the request's CancellationToken — that token is
+        // aborted the instant the registration response is sent, which would kill the
+        // game after a move or two. The request `ct` only bounds the wait for the
+        // mirror match below (so an aborted caller stops waiting; the game keeps going).
+        _ = Task.Run(
+            () => DriveAsync(game, botId, ready, lifetime.ApplicationStopping),
+            CancellationToken.None);
+        return ready.Task.WaitAsync(ct);
     }
 
     // The drive loop. Exposed internally so it can be awaited directly in tests with a
