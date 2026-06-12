@@ -19,7 +19,14 @@ internal sealed class LichessProvider(HttpClient httpClient) : IExternalProvider
     // A just-accepted challenge can take a moment to become a streamable game, so the
     // first connect retries on 404 before giving up.
     private const int MaxConnectAttempts = 10;
+
+    // A single game stream is a long-lived HTTP response that can drop mid-game (idle
+    // close, proxy reset, HTTP/2 GOAWAY, client timeout). Reconnect and resume up to this
+    // many consecutive failures; a healthy update resets the budget.
+    private const int MaxReconnectAttempts = 6;
+
     private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromMilliseconds(750);
+    private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(2);
 
     public string Name => "lichess";
 
@@ -45,39 +52,93 @@ internal sealed class LichessProvider(HttpClient httpClient) : IExternalProvider
     {
         string accountId = await GetAccountIdAsync(game.Token, ct);
 
-        using HttpResponseMessage response = await OpenGameStreamAsync(game, ct);
-
-        await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
-        using StreamReader reader = new(stream);
-
         string initialFen = MaichessTournamentBridgeService.Chess.ChessPosition.StartFen;
         string ourColor = "white";
         string opponentName = "Lichess opponent";
         bool gameFullSeen = false;
+        bool finished = false;
+        bool everConnected = false;
+        int reconnects = 0;
 
-        while (!ct.IsCancellationRequested)
+        // Reconnect-and-resume loop: Lichess re-sends gameFull (full current state) on
+        // every connect, so the caller's fold rebuilds after a drop. Stop on a terminal
+        // game state, on shutdown, or after too many consecutive failures. The very first
+        // connect is NOT tolerated (everConnected gate) so a bad token / unknown game id
+        // still surfaces to the registration caller as it did before.
+        while (!finished && !ct.IsCancellationRequested)
         {
-            string? line = await reader.ReadLineAsync(ct);
-            if (line is null)
+            HttpResponseMessage response;
+            try
             {
-                break;
+                response = await OpenGameStreamAsync(game, ct);
             }
-
-            if (string.IsNullOrWhiteSpace(line))
+            catch (Exception ex) when (everConnected && IsTransient(ex) && !ct.IsCancellationRequested)
             {
+                if (++reconnects > MaxReconnectAttempts)
+                {
+                    yield break;
+                }
+
+                await Task.Delay(ReconnectDelay, ct);
                 continue;
             }
 
-            if (!gameFullSeen)
+            everConnected = true;
+            bool dropped = false;
+            using (response)
             {
-                (initialFen, ourColor, opponentName) = ReadGameFull(line, accountId);
-                gameFullSeen = true;
+                await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
+                using StreamReader reader = new(stream);
+
+                while (!finished)
+                {
+                    string? line;
+                    try
+                    {
+                        line = await reader.ReadLineAsync(ct);
+                    }
+                    catch (Exception ex) when (IsTransient(ex) && !ct.IsCancellationRequested)
+                    {
+                        dropped = true;
+                        break;
+                    }
+
+                    if (line is null)
+                    {
+                        // Clean EOF before a terminal state — the stream dropped; reconnect.
+                        dropped = true;
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    if (!gameFullSeen)
+                    {
+                        (initialFen, ourColor, opponentName) = ReadGameFull(line, accountId);
+                        gameFullSeen = true;
+                    }
+
+                    GameUpdate? update = LichessEventParser.Parse(line, initialFen, ourColor, opponentName);
+                    if (update is not null)
+                    {
+                        reconnects = 0;
+                        finished = update.IsFinished;
+                        yield return update;
+                    }
+                }
             }
 
-            GameUpdate? update = LichessEventParser.Parse(line, initialFen, ourColor, opponentName);
-            if (update is not null)
+            if (dropped && !finished && !ct.IsCancellationRequested)
             {
-                yield return update;
+                if (++reconnects > MaxReconnectAttempts)
+                {
+                    yield break;
+                }
+
+                await Task.Delay(ReconnectDelay, ct);
             }
         }
     }
@@ -91,6 +152,12 @@ internal sealed class LichessProvider(HttpClient httpClient) : IExternalProvider
         using HttpResponseMessage response = await httpClient.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
     }
+
+    // Connection-level failures that warrant a reconnect rather than ending the game.
+    // OperationCanceledException is treated as transient only at call sites guarded by a
+    // `!ct.IsCancellationRequested` check, so a requested shutdown still propagates.
+    private static bool IsTransient(Exception ex) =>
+        ex is IOException or HttpRequestException or OperationCanceledException;
 
     private static (string InitialFen, string OurColor, string OpponentName) ReadGameFull(
         string line, string accountId)
