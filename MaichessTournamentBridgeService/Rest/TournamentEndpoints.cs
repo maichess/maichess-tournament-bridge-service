@@ -25,8 +25,10 @@ internal static class TournamentEndpoints
         group.MapDelete("/tournaments/{id}/register", WithdrawBot);
         group.MapGet("/tournaments/{id}/rounds/{round:int}", GetRoundPairings);
         group.MapGet("/tournaments/{id}/results", GetResults);
+        group.MapGet("/tournaments/{id}/export", ExportGames);
         group.MapGet("/tournaments/{id}/stream", StreamTournament);
         group.MapGet("/bots", ListBots);
+        group.MapGet("/openings", ListOpenings);
         group.MapGet("/config", GetConfig);
         group.MapPut("/config", UpdateConfig);
     }
@@ -72,9 +74,12 @@ internal static class TournamentEndpoints
         Dictionary<string, string> formFields = [];
         foreach (JsonProperty prop in body.RootElement.EnumerateObject())
         {
-            formFields[prop.Name] = prop.Value.ValueKind == JsonValueKind.Number
-                ? prop.Value.GetRawText()
-                : prop.Value.GetString() ?? prop.Value.GetRawText();
+            // GetString() throws on non-string kinds (e.g. the boolean `rated`),
+            // so only call it for strings; numbers and booleans serialise to their
+            // raw JSON literal ("300", "true"), which is what the form expects.
+            formFields[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                ? prop.Value.GetString()!
+                : prop.Value.GetRawText();
         }
 
         Tournament tournament = await client.CreateTournamentAsync(
@@ -376,6 +381,47 @@ internal static class TournamentEndpoints
         string serverUrl = config.ResolveServerUrl(server);
         List<TournamentResult> results = await client.GetResultsAsync(serverUrl, id, ct);
         return Results.Ok(new { results });
+    }
+
+    private static async Task<IResult> ExportGames(
+        string id,
+        string? server,
+        TournamentServerClient client,
+        BridgeConfig config,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        try
+        {
+            string pgn = await client.ExportGamesAsync(serverUrl, id, ct);
+            return Results.Text(pgn, "application/x-chess-pgn");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Results.NotFound();
+        }
+        catch (HttpRequestException)
+        {
+            return Results.StatusCode(502);
+        }
+    }
+
+    private static async Task<IResult> ListOpenings(
+        string? server,
+        TournamentServerClient client,
+        BridgeConfig config,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        try
+        {
+            OpeningsResponse openings = await client.ListOpeningsAsync(serverUrl, ct);
+            return Results.Ok(openings);
+        }
+        catch (HttpRequestException)
+        {
+            return Results.StatusCode(502);
+        }
     }
 
     private static async Task StreamTournament(

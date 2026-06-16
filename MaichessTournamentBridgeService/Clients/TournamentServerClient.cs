@@ -49,6 +49,29 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
             ?? throw new InvalidOperationException("Empty create tournament response");
     }
 
+    internal async Task<OpeningsResponse> ListOpeningsAsync(
+        string serverUrl, CancellationToken ct)
+    {
+        using HttpResponseMessage response = await httpClient.GetAsync(
+            $"{serverUrl}/api/openings", ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<OpeningsResponse>(ct)
+            ?? throw new InvalidOperationException("Empty openings response");
+    }
+
+    internal async Task<string> ExportGamesAsync(
+        string serverUrl, string tournamentId, CancellationToken ct)
+    {
+        using HttpRequestMessage request = new(
+            HttpMethod.Get, $"{serverUrl}/api/tournament/{tournamentId}/export/games");
+        request.Headers.Accept.Add(
+            new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/x-chess-pgn"));
+
+        using HttpResponseMessage response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(ct);
+    }
+
     internal async Task<Tournament> GetTournamentAsync(
         string serverUrl, string tournamentId, CancellationToken ct)
     {
