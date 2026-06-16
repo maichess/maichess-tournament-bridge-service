@@ -17,8 +17,21 @@ internal sealed class TournamentOrchestrator(
     private readonly Dictionary<string, CancellationTokenSource> _activeTournaments = [];
     private readonly ConcurrentDictionary<string, string> _gameOwners = new();
     private readonly ConcurrentDictionary<string, (string WhiteBotId, string BlackBotId)> _roundPairings = new();
+    private readonly ConcurrentDictionary<string, TournamentClock> _tournamentClocks = new();
 
     internal static bool IsOurTurn(GameEvent evt, string ourColor) => evt.Turn == ourColor;
+
+    internal static string FormatTimeId(TournamentClock clock) =>
+        $"{clock.Limit / 60}+{clock.Increment}";
+
+    internal static string CategoryFor(TournamentClock clock)
+    {
+        int estimatedSeconds = clock.Limit + (40 * clock.Increment);
+        return estimatedSeconds < 180 ? "bullet"
+            : estimatedSeconds < 480 ? "blitz"
+            : estimatedSeconds < 1500 ? "rapid"
+            : "classical";
+    }
 
     internal Task StartDriving(Registration registration)
     {
@@ -168,6 +181,13 @@ internal sealed class TournamentOrchestrator(
     private async Task HandleGameStartAsync(
         Registration registration, string gameId, string ourColor, CancellationToken ct)
     {
+        // Fetch the real game so the driver starts from the actual position, clock,
+        // and turn the tournament server created — never assume a standard 5+0 game.
+        // (The old hardcoded standard FEN made the opening move illegal for custom
+        // openings, so it was rejected and the game timed out without a single move.)
+        GameState game = await tournamentClient.GetGameAsync(
+            registration.ServerUrl, registration.TournamentId, gameId, ct);
+
         bool isOwner = _gameOwners.TryAdd(gameId, registration.Id);
 
         Registration? opponentReg = FindOpponentRegistration(registration, gameId, ourColor);
@@ -181,8 +201,9 @@ internal sealed class TournamentOrchestrator(
                 registration.MaichessBotId,
                 ourColor);
 
+            TournamentClock clock = await GetTournamentClockAsync(registration, ct);
             string matchDbId = await CreateExternalMatchAsync(
-                registration, gameId, ourColor, opponentBotId, ct);
+                registration, gameId, ourColor, opponentBotId, clock, ct);
 
             registrationStore.AddGameMapping(
                 registration.Id,
@@ -201,12 +222,12 @@ internal sealed class TournamentOrchestrator(
                 matchDbId,
                 ourColor,
                 registration.BotToken,
-                [],
-                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-                "ongoing",
-                "white",
-                300_000,
-                300_000);
+                [.. game.Moves.Split(' ', StringSplitOptions.RemoveEmptyEntries)],
+                game.Fen,
+                game.Status,
+                game.Turn,
+                (long)(game.Clock.WhiteTime * 1000),
+                (long)(game.Clock.BlackTime * 1000));
 
             await DriveGameAsync(registration, state, ct);
         }
@@ -220,6 +241,20 @@ internal sealed class TournamentOrchestrator(
 
             await DriveNonOwnerGameAsync(registration, gameId, ourColor, ct);
         }
+    }
+
+    private async Task<TournamentClock> GetTournamentClockAsync(
+        Registration registration, CancellationToken ct)
+    {
+        if (_tournamentClocks.TryGetValue(registration.TournamentId, out TournamentClock? cached))
+        {
+            return cached;
+        }
+
+        Tournament tournament = await tournamentClient.GetTournamentAsync(
+            registration.ServerUrl, registration.TournamentId, ct);
+        _tournamentClocks[registration.TournamentId] = tournament.Clock;
+        return tournament.Clock;
     }
 
     private Registration? FindOpponentRegistration(
@@ -244,13 +279,15 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
+            // No opening-move shortcut: the game stream emits the full gameState
+            // snapshot on connect, so when it is our turn (including move one) we
+            // react to that event with the real position and clock.
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
                 registration.TournamentId,
                 gameId,
-                ct,
-                onConnected: () => SubmitNonOwnerOpeningMoveAsync(registration, gameId, ourColor, ct)))
+                ct))
             {
                 if (evt.Type == "gameState" || evt.Type == "move")
                 {
@@ -296,16 +333,17 @@ internal sealed class TournamentOrchestrator(
     private async Task DriveGameAsync(
         Registration registration, GameDriverState state, CancellationToken ct)
     {
-        GameDriverState opening = state;
         try
         {
+            // The game stream emits the full gameState snapshot on connect, which
+            // drives the first move (when it is our turn) from the real position —
+            // no separate opening-move submission is needed.
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
                 registration.TournamentId,
                 state.GameId,
-                ct,
-                onConnected: () => SubmitOpeningMoveAsync(registration, opening, ct)))
+                ct))
             {
                 state = GameDriver.ApplyGameEvent(state, evt);
                 GameDriverAction action = GameDriver.DetermineAction(state);
@@ -344,47 +382,6 @@ internal sealed class TournamentOrchestrator(
         }
     }
 
-    private async Task SubmitOpeningMoveAsync(
-        Registration registration, GameDriverState state, CancellationToken ct)
-    {
-        if (!state.IsOurTurn)
-        {
-            return;
-        }
-
-        string openingMove = await GetEngineMoveAsync(registration.MaichessBotId, state, ct);
-        await tournamentClient.SubmitMoveAsync(
-            registration.ServerUrl,
-            state.OurBotToken,
-            state.TournamentId,
-            state.GameId,
-            openingMove,
-            ct);
-    }
-
-    private async Task SubmitNonOwnerOpeningMoveAsync(
-        Registration registration, string gameId, string ourColor, CancellationToken ct)
-    {
-        if (ourColor != "white")
-        {
-            return;
-        }
-
-        string fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-        long timeLimitMs = GameDriver.ComputeTimeLimitMs(300_000, 0);
-
-        string openingMove = await engineMoveSource.GetBestMoveAsync(
-            registration.MaichessBotId, fen, (int)timeLimitMs, ct);
-
-        await tournamentClient.SubmitMoveAsync(
-            registration.ServerUrl,
-            registration.BotToken,
-            registration.TournamentId,
-            gameId,
-            openingMove,
-            ct);
-    }
-
     private async Task<string> GetEngineMoveAsync(
         string botId, GameDriverState state, CancellationToken ct)
     {
@@ -396,7 +393,12 @@ internal sealed class TournamentOrchestrator(
     }
 
     private async Task<string> CreateExternalMatchAsync(
-        Registration registration, string gameId, string ourColor, string opponentBotId, CancellationToken ct)
+        Registration registration,
+        string gameId,
+        string ourColor,
+        string opponentBotId,
+        TournamentClock clock,
+        CancellationToken ct)
     {
         bool opponentIsOurs = !string.IsNullOrEmpty(opponentBotId);
 
@@ -425,10 +427,10 @@ internal sealed class TournamentOrchestrator(
                 Black = black,
                 TimeFormat = new Maichess.MatchManager.V1.TimeFormat
                 {
-                    Id = "5+0",
-                    BaseMs = 300_000,
-                    IncrementMs = 0,
-                    Category = "blitz",
+                    Id = FormatTimeId(clock),
+                    BaseMs = clock.Limit * 1000L,
+                    IncrementMs = clock.Increment * 1000L,
+                    Category = CategoryFor(clock),
                 },
                 Source = MatchSource.External,
                 ExternalProvider = "tournament-server",

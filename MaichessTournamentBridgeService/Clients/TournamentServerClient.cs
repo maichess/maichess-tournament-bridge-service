@@ -82,6 +82,16 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
             ?? throw new InvalidOperationException("Empty tournament response");
     }
 
+    internal async Task<GameState> GetGameAsync(
+        string serverUrl, string tournamentId, string gameId, CancellationToken ct)
+    {
+        using HttpResponseMessage response = await httpClient.GetAsync(
+            $"{serverUrl}/api/tournament/{tournamentId}/game/{gameId}", ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<GameState>(ct)
+            ?? throw new InvalidOperationException("Empty game state response");
+    }
+
     internal async Task DeleteTournamentAsync(
         string serverUrl, string token, string tournamentId, CancellationToken ct)
     {
@@ -197,8 +207,7 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         string token,
         string tournamentId,
         string gameId,
-        [EnumeratorCancellation] CancellationToken ct,
-        Func<Task>? onConnected = null)
+        [EnumeratorCancellation] CancellationToken ct)
     {
         using HttpRequestMessage request = new(
             HttpMethod.Get,
@@ -209,15 +218,6 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         using HttpResponseMessage response = await httpClient.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
-
-        // The game-event subscription is registered server-side by the time the
-        // response headers arrive, so any move published from here on is queued
-        // for us. Play our opening move now — before reading the stream — so a
-        // fast opponent reply cannot slip through before we are listening.
-        if (onConnected is not null)
-        {
-            await onConnected();
-        }
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
         using StreamReader reader = new(stream);
