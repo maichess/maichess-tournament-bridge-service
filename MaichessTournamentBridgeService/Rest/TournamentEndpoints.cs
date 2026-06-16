@@ -28,6 +28,9 @@ internal static class TournamentEndpoints
         group.MapGet("/tournaments/{id}/export", ExportGames);
         group.MapGet("/tournaments/{id}/stream", StreamTournament);
         group.MapGet("/bots", ListBots);
+        group.MapGet("/registry", ListRegistry);
+        group.MapPost("/registry", RegisterPermanentBot);
+        group.MapDelete("/registry/{id}", DeletePermanentBot);
         group.MapGet("/openings", ListOpenings);
         group.MapGet("/config", GetConfig);
         group.MapPut("/config", UpdateConfig);
@@ -404,6 +407,91 @@ internal static class TournamentEndpoints
         {
             return Results.StatusCode(502);
         }
+    }
+
+    private static async Task<IResult> ListRegistry(
+        string? server,
+        TournamentServerClient client,
+        BridgeConfig config,
+        Bots.BotsClient engineClient,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        try
+        {
+            RegisteredBotsResponse registered = await client.ListRegisteredBotsAsync(serverUrl, ct);
+            ListBotsResponse maichessBots = await engineClient.ListBotsAsync(
+                new ListBotsRequest(), cancellationToken: ct);
+            var idByName = maichessBots.Bots
+                .GroupBy(b => b.Name)
+                .ToDictionary(g => g.Key, g => g.First().Id);
+
+            var bots = registered.Bots.Select(b => new
+            {
+                id = b.Id,
+                name = b.Name,
+                maichess_bot_id = idByName.TryGetValue(b.Name, out string? mid) ? mid : null,
+            });
+            return Results.Ok(new { bots });
+        }
+        catch (HttpRequestException)
+        {
+            return Results.StatusCode(502);
+        }
+    }
+
+    private static async Task<IResult> RegisterPermanentBot(
+        string? server,
+        HttpRequest httpRequest,
+        TournamentServerClient client,
+        BridgeConfig config,
+        Bots.BotsClient engineClient,
+        ClaimsPrincipal user,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        string userId = GetUserId(user);
+
+        JsonDocument body = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: ct);
+        string botId = body.RootElement.GetProperty("bot_id").GetString()
+            ?? throw new InvalidOperationException("bot_id is required");
+
+        ListBotsResponse bots = await engineClient.ListBotsAsync(
+            new ListBotsRequest(), cancellationToken: ct);
+        Bot? bot = bots.Bots.FirstOrDefault(b => b.Id == botId);
+        if (bot is null)
+        {
+            return Results.BadRequest(new { error = $"Unknown bot: {botId}" });
+        }
+
+        RegisterIdentityResponse director = await client.RegisterAsync(
+            serverUrl, $"director-{userId}", false, ct);
+        RegisteredBot registered = await client.RegisterBotAsync(
+            serverUrl, director.Token, bot.Name, null, ct);
+
+        return Results.Ok(new
+        {
+            id = registered.Id,
+            name = registered.Name,
+            maichess_bot_id = botId,
+        });
+    }
+
+    private static async Task<IResult> DeletePermanentBot(
+        string id,
+        string? server,
+        TournamentServerClient client,
+        BridgeConfig config,
+        ClaimsPrincipal user,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        string userId = GetUserId(user);
+
+        RegisterIdentityResponse director = await client.RegisterAsync(
+            serverUrl, $"director-{userId}", false, ct);
+        await client.DeleteRegisteredBotAsync(serverUrl, director.Token, id, ct);
+        return Results.NoContent();
     }
 
     private static async Task<IResult> ListOpenings(

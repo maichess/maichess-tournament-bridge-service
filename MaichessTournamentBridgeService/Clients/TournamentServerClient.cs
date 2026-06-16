@@ -49,6 +49,42 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
             ?? throw new InvalidOperationException("Empty create tournament response");
     }
 
+    internal async Task<RegisteredBot> RegisterBotAsync(
+        string serverUrl, string token, string name, string? endpoint, CancellationToken ct)
+    {
+        object payload = endpoint is null ? new { name } : new { name, endpoint };
+        using HttpRequestMessage request = new(HttpMethod.Post, $"{serverUrl}/api/bots")
+        {
+            Content = JsonContent.Create(payload),
+        };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        using HttpResponseMessage response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<RegisteredBot>(ct)
+            ?? throw new InvalidOperationException("Empty register bot response");
+    }
+
+    internal async Task<RegisteredBotsResponse> ListRegisteredBotsAsync(
+        string serverUrl, CancellationToken ct)
+    {
+        using HttpResponseMessage response = await httpClient.GetAsync(
+            $"{serverUrl}/api/bots", ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<RegisteredBotsResponse>(ct)
+            ?? throw new InvalidOperationException("Empty registered bots response");
+    }
+
+    internal async Task DeleteRegisteredBotAsync(
+        string serverUrl, string token, string botId, CancellationToken ct)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Delete, $"{serverUrl}/api/bots/{botId}");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        using HttpResponseMessage response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
     internal async Task<OpeningsResponse> ListOpeningsAsync(
         string serverUrl, CancellationToken ct)
     {
