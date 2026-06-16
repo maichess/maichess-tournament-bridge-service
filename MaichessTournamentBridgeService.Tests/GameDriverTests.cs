@@ -53,6 +53,37 @@ public sealed class GameDriverTests
         Assert.Equal(GameDriverAction.WaitForOpponent, GameDriver.DetermineAction(state));
     }
 
+    // A "pending" game (held back by the tournament's maxConcurrentGames cap) is
+    // neither finished nor playable. The driver must wait — even when it would
+    // otherwise be our turn — and must never treat pending as a finished game.
+    [Fact]
+    internal void DetermineAction_PendingGame_Waits_EvenOnOurTurn()
+    {
+        GameDriverState state = NewState("white", turnColor: "white") with { Status = "pending" };
+        Assert.False(state.IsFinished);
+        Assert.True(state.IsPending);
+        Assert.Equal(GameDriverAction.WaitForOpponent, GameDriver.DetermineAction(state));
+    }
+
+    [Fact]
+    internal void ApplyGameEvent_PendingSnapshot_IsNotFinalized()
+    {
+        GameDriverState state = NewState("white", turnColor: "white");
+
+        var pending = new GameEvent(
+            Type: "gameState",
+            Fen: StartFen,
+            Moves: string.Empty,
+            Turn: "white",
+            Status: "pending");
+
+        GameDriverState next = GameDriver.ApplyGameEvent(state, pending);
+
+        Assert.Equal("pending", next.Status);
+        Assert.False(next.IsFinished);
+        Assert.Equal(GameDriverAction.WaitForOpponent, GameDriver.DetermineAction(next));
+    }
+
     // Regression test for the deadlock: a "move" event from the tournament
     // server carries only `uci` + `turn` (no `moves` string). The driver must
     // still recognise that it is now our turn. Before the fix, turn was

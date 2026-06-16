@@ -15,5 +15,11 @@ internal sealed record GameDriverState(
 {
     internal bool IsOurTurn => TurnColor == OurColor;
 
-    internal bool IsFinished => Status is not "ongoing" and not "started";
+    // A game the tournament server created but has not yet activated (held back by
+    // the round's maxConcurrentGames cap). It is neither finished nor playable —
+    // moves against it are rejected — so the driver must simply wait. (Added with
+    // the tournament-server "pending games" API update.)
+    internal bool IsPending => Status is "pending";
+
+    internal bool IsFinished => Status is not "ongoing" and not "started" and not "pending";
 }

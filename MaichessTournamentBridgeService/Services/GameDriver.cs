@@ -6,6 +6,7 @@ internal static class GameDriver
 {
     internal static GameDriverAction DetermineAction(GameDriverState state) =>
         state.IsFinished ? GameDriverAction.FinalizeMatch
+        : state.IsPending ? GameDriverAction.WaitForOpponent
         : state.IsOurTurn ? GameDriverAction.RequestEngineMove
         : GameDriverAction.WaitForOpponent;
 

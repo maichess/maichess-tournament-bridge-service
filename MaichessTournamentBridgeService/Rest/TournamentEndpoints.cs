@@ -429,11 +429,12 @@ internal static class TournamentEndpoints
     private static IResult GetConfig(BridgeConfig config) =>
         Results.Ok(new { default_server_url = config.DefaultServerUrl });
 
-    private static IResult UpdateConfig(
+    private static async Task<IResult> UpdateConfig(
         HttpRequest httpRequest,
-        BridgeConfig config)
+        BridgeConfig config,
+        CancellationToken ct)
     {
-        using var body = JsonDocument.Parse(httpRequest.Body);
+        using JsonDocument body = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: ct);
         string url = body.RootElement.GetProperty("default_server_url").GetString()
             ?? throw new InvalidOperationException("default_server_url is required");
         config.SetDefaultServerUrl(url);
