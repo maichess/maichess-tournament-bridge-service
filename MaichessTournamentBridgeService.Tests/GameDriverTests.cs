@@ -32,6 +32,19 @@ public sealed class GameDriverTests
         Assert.Equal(expected, state.IsOurTurn);
     }
 
+    // The new heartbeating tournament server interleaves {"type":"heartbeat"}
+    // lines into the game stream. The driver must treat them as non-actionable so
+    // it never re-fires a move it has already submitted (the double-submit race).
+    [Theory]
+    [InlineData("gameState", true)]
+    [InlineData("move", true)]
+    [InlineData("gameEnd", true)]
+    [InlineData("heartbeat", false)]
+    internal void IsActionable_IgnoresOnlyHeartbeat(string type, bool expected)
+    {
+        Assert.Equal(expected, GameDriver.IsActionable(new GameEvent(Type: type)));
+    }
+
     [Fact]
     internal void DetermineAction_FinishedGame_Finalizes()
     {

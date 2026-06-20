@@ -2,12 +2,11 @@ using System.Text.Json.Serialization;
 
 namespace MaichessTournamentBridgeService.Models;
 
-// A bot permanently registered in the tournament server's /api/bots catalog.
-// Its id is auth-backed, so the bridge can drive it after it joins a tournament.
-// The metadata fields (family/strategyType/engineType/modelVersion) are optional
+// Request body for POST /api/bots — permanently register a bot in the tournament
+// server's catalog. Only `name` is required; the optional metadata fields are
 // analytics-grouping hints carried through into the server's analytics export.
-internal sealed record RegisteredBot(
-    [property: JsonPropertyName("id")] string Id,
+// Null fields are omitted from the wire payload (DefaultIgnoreCondition).
+internal sealed record RegisterBotRequest(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("endpoint")] string? Endpoint = null,
     [property: JsonPropertyName("family")] string? Family = null,

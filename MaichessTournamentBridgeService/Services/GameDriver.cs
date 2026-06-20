@@ -4,6 +4,16 @@ namespace MaichessTournamentBridgeService.Services;
 
 internal static class GameDriver
 {
+    // The tournament server interleaves a JSON heartbeat line
+    // (`{"type":"heartbeat"}`) into every NDJSON stream every ~10s to keep idle
+    // connections alive. The contract says clients must ignore it. A heartbeat
+    // carries no move/turn/status, so feeding it through ApplyGameEvent leaves the
+    // state unchanged — and DetermineAction would then re-fire RequestEngineMove
+    // for a move we have already submitted (the echo of which has not yet arrived),
+    // double-submitting an out-of-turn move that the server rejects and killing the
+    // game drive. Skipping non-actionable events before deciding avoids that race.
+    internal static bool IsActionable(GameEvent evt) => evt.Type != "heartbeat";
+
     internal static GameDriverAction DetermineAction(GameDriverState state) =>
         state.IsFinished ? GameDriverAction.FinalizeMatch
         : state.IsPending ? GameDriverAction.WaitForOpponent

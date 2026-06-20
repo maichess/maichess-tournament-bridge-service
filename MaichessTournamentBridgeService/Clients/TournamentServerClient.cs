@@ -1,12 +1,20 @@
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using MaichessTournamentBridgeService.Models;
 
 namespace MaichessTournamentBridgeService.Clients;
 
 internal sealed class TournamentServerClient(HttpClient httpClient)
 {
+    // Omit null properties so optional fields (endpoint, bot metadata, opening key)
+    // are not sent as JSON nulls — the tournament server derives/defaults them.
+    private static readonly JsonSerializerOptions OmitNulls = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
     internal async Task<RegisterIdentityResponse> RegisterAsync(
         string serverUrl, string name, bool isBot, CancellationToken ct)
     {
@@ -50,12 +58,11 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
     }
 
     internal async Task<RegisteredBot> RegisterBotAsync(
-        string serverUrl, string token, string name, string? endpoint, CancellationToken ct)
+        string serverUrl, string token, RegisterBotRequest payload, CancellationToken ct)
     {
-        object payload = endpoint is null ? new { name } : new { name, endpoint };
         using HttpRequestMessage request = new(HttpMethod.Post, $"{serverUrl}/api/bots")
         {
-            Content = JsonContent.Create(payload),
+            Content = JsonContent.Create(payload, options: OmitNulls),
         };
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
@@ -63,6 +70,44 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<RegisteredBot>(ct)
             ?? throw new InvalidOperationException("Empty register bot response");
+    }
+
+    internal async Task AddParticipantAsync(
+        string serverUrl, string token, string tournamentId, string botId, CancellationToken ct)
+    {
+        using HttpRequestMessage request = new(
+            HttpMethod.Post, $"{serverUrl}/api/tournament/{tournamentId}/participants")
+        {
+            Content = JsonContent.Create(new AddParticipantRequest(botId)),
+        };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        using HttpResponseMessage response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    internal async Task<Opening> RegisterOpeningAsync(
+        string serverUrl, string token, string name, string fen, string? key, CancellationToken ct)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Post, $"{serverUrl}/api/openings")
+        {
+            Content = JsonContent.Create(new { name, fen, key }, options: OmitNulls),
+        };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        using HttpResponseMessage response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<Opening>(ct)
+            ?? throw new InvalidOperationException("Empty register opening response");
+    }
+
+    internal async Task<string> GetAnalyticsExportAsync(
+        string serverUrl, string tournamentId, CancellationToken ct)
+    {
+        using HttpResponseMessage response = await httpClient.GetAsync(
+            $"{serverUrl}/api/tournament/{tournamentId}/analytics-export", ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(ct);
     }
 
     internal async Task<RegisteredBotsResponse> ListRegisteredBotsAsync(

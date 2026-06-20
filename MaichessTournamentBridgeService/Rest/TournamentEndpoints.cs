@@ -23,15 +23,18 @@ internal static class TournamentEndpoints
         group.MapPost("/tournaments/{id}/start", StartTournament);
         group.MapPost("/tournaments/{id}/register", RegisterBot);
         group.MapDelete("/tournaments/{id}/register", WithdrawBot);
+        group.MapPost("/tournaments/{id}/participants", AddParticipant);
         group.MapGet("/tournaments/{id}/rounds/{round:int}", GetRoundPairings);
         group.MapGet("/tournaments/{id}/results", GetResults);
         group.MapGet("/tournaments/{id}/export", ExportGames);
+        group.MapGet("/tournaments/{id}/analytics", GetAnalyticsExport);
         group.MapGet("/tournaments/{id}/stream", StreamTournament);
         group.MapGet("/bots", ListBots);
         group.MapGet("/registry", ListRegistry);
         group.MapPost("/registry", RegisterPermanentBot);
         group.MapDelete("/registry/{id}", DeletePermanentBot);
         group.MapGet("/openings", ListOpenings);
+        group.MapPost("/openings", RegisterOpening);
         group.MapGet("/config", GetConfig);
         group.MapPut("/config", UpdateConfig);
     }
@@ -331,6 +334,88 @@ internal static class TournamentEndpoints
         }
     }
 
+    private static async Task<IResult> AddParticipant(
+        string id,
+        string? server,
+        HttpRequest httpRequest,
+        TournamentServerClient client,
+        BridgeConfig config,
+        RegistrationStore store,
+        Bots.BotsClient engineClient,
+        ClaimsPrincipal user,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        string userId = GetUserId(user);
+
+        Registration? director = store.FindDirector(serverUrl, id);
+        if (director is null)
+        {
+            return Results.StatusCode(403);
+        }
+
+        JsonDocument body = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: ct);
+        string botId = body.RootElement.GetProperty("bot_id").GetString()
+            ?? throw new InvalidOperationException("bot_id is required");
+        string registryId = body.RootElement.GetProperty("registry_id").GetString()
+            ?? throw new InvalidOperationException("registry_id is required");
+
+        Registration? existing = store.FindByBot(serverUrl, id, botId);
+        if (existing is not null)
+        {
+            return Results.Conflict(new { error = $"Bot {botId} is already registered" });
+        }
+
+        ListBotsResponse bots = await engineClient.ListBotsAsync(
+            new ListBotsRequest(), cancellationToken: ct);
+        Bot? bot = bots.Bots.FirstOrDefault(b => b.Id == botId);
+        if (bot is null)
+        {
+            return Results.BadRequest(new { error = $"Unknown bot: {botId}" });
+        }
+
+        try
+        {
+            // The director adds the permanently-registered bot to the tournament, then
+            // the bridge mints a token for the same name so it can drive the bot's
+            // moves (the registry id is auth-backed — see the tournament server API).
+            await client.AddParticipantAsync(serverUrl, director.DirectorToken, id, registryId, ct);
+            RegisterIdentityResponse botIdentity = await client.RegisterAsync(
+                serverUrl, bot.Name, true, ct);
+
+            Registration reg = store.Save(new Registration
+            {
+                Id = $"reg_{Guid.NewGuid():N}",
+                ServerUrl = serverUrl,
+                TournamentId = id,
+                TournamentName = string.Empty,
+                MaichessBotId = botId,
+                MaichessUserId = userId,
+                Status = "registered",
+                DirectorToken = string.Empty,
+                BotToken = botIdentity.Token,
+                TournamentBotId = botIdentity.Id,
+            });
+
+            return Results.Ok(new
+            {
+                registration_id = reg.Id,
+                tournament_id = id,
+                bot_id = botId,
+                registry_id = registryId,
+                status = "registered",
+            });
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            return Results.Conflict();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
+        {
+            return Results.BadRequest(new { error = $"Unknown registry bot: {registryId}" });
+        }
+    }
+
     private static async Task<IResult> GetRoundPairings(
         string id,
         int round,
@@ -409,6 +494,35 @@ internal static class TournamentEndpoints
         }
     }
 
+    private static async Task<IResult> GetAnalyticsExport(
+        string id,
+        string? server,
+        TournamentServerClient client,
+        BridgeConfig config,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        try
+        {
+            string json = await client.GetAnalyticsExportAsync(serverUrl, id, ct);
+            return Results.Content(json, "application/json");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Results.NotFound();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            // The tournament is not finished yet — the export is only available once
+            // the tournament reaches the `finished` status.
+            return Results.Conflict(new { error = "Tournament is not finished" });
+        }
+        catch (HttpRequestException)
+        {
+            return Results.StatusCode(502);
+        }
+    }
+
     private static async Task<IResult> ListRegistry(
         string? server,
         TournamentServerClient client,
@@ -467,7 +581,7 @@ internal static class TournamentEndpoints
         RegisterIdentityResponse director = await client.RegisterAsync(
             serverUrl, $"director-{userId}", false, ct);
         RegisteredBot registered = await client.RegisterBotAsync(
-            serverUrl, director.Token, bot.Name, null, ct);
+            serverUrl, director.Token, MaichessBotMetadata(bot), ct);
 
         return Results.Ok(new
         {
@@ -509,6 +623,45 @@ internal static class TournamentEndpoints
         catch (HttpRequestException)
         {
             return Results.StatusCode(502);
+        }
+    }
+
+    private static async Task<IResult> RegisterOpening(
+        string? server,
+        HttpRequest httpRequest,
+        TournamentServerClient client,
+        BridgeConfig config,
+        ClaimsPrincipal user,
+        CancellationToken ct)
+    {
+        string serverUrl = config.ResolveServerUrl(server);
+        string userId = GetUserId(user);
+
+        JsonDocument body = await JsonDocument.ParseAsync(httpRequest.Body, cancellationToken: ct);
+        string name = body.RootElement.GetProperty("name").GetString()
+            ?? throw new InvalidOperationException("name is required");
+        string fen = body.RootElement.GetProperty("fen").GetString()
+            ?? throw new InvalidOperationException("fen is required");
+        string? key = body.RootElement.TryGetProperty("key", out JsonElement keyEl)
+            ? keyEl.GetString()
+            : null;
+
+        RegisterIdentityResponse identity = await client.RegisterAsync(
+            serverUrl, $"director-{userId}", false, ct);
+
+        try
+        {
+            Opening opening = await client.RegisterOpeningAsync(
+                serverUrl, identity.Token, name, fen, key, ct);
+            return Results.Created($"/openings/{opening.Key}", opening);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            return Results.Conflict(new { error = "Opening key already exists" });
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
+        {
+            return Results.BadRequest(new { error = "Invalid opening name or FEN" });
         }
     }
 
@@ -574,6 +727,16 @@ internal static class TournamentEndpoints
         config.SetDefaultServerUrl(url);
         return Results.Ok(new { default_server_url = config.DefaultServerUrl });
     }
+
+    // Map a maichess engine bot to the tournament server's registry metadata so the
+    // analytics export groups bots meaningfully: all maichess bots share the
+    // "maichess" family, the engine variant id is the strategy type, and they run on
+    // the internal engine. (The engine `Bot` proto carries no version, so it is omitted.)
+    private static RegisterBotRequest MaichessBotMetadata(Bot bot) => new(
+        Name: bot.Name,
+        Family: "maichess",
+        StrategyType: bot.Id,
+        EngineType: "internal");
 
     private static string GetUserId(ClaimsPrincipal user) =>
         user.FindFirstValue(ClaimTypes.NameIdentifier)

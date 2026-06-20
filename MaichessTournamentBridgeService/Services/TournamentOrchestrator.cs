@@ -289,6 +289,11 @@ internal sealed class TournamentOrchestrator(
                 gameId,
                 ct))
             {
+                if (!GameDriver.IsActionable(evt))
+                {
+                    continue;
+                }
+
                 if (evt.Type == "gameState" || evt.Type == "move")
                 {
                     bool isOurTurn = IsOurTurn(evt, ourColor);
@@ -345,6 +350,11 @@ internal sealed class TournamentOrchestrator(
                 state.GameId,
                 ct))
             {
+                if (!GameDriver.IsActionable(evt))
+                {
+                    continue;
+                }
+
                 state = GameDriver.ApplyGameEvent(state, evt);
                 GameDriverAction action = GameDriver.DetermineAction(state);
 
