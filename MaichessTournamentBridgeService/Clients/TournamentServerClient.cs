@@ -288,7 +288,8 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         string token,
         string tournamentId,
         string gameId,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct,
+        Action? onConnected = null)
     {
         using HttpRequestMessage request = new(
             HttpMethod.Get,
@@ -299,6 +300,8 @@ internal sealed class TournamentServerClient(HttpClient httpClient)
         using HttpResponseMessage response = await httpClient.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
+
+        onConnected?.Invoke();
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(ct);
         using StreamReader reader = new(stream);
