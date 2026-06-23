@@ -279,9 +279,29 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
-            // No opening-move shortcut: the game stream emits the full gameState
-            // snapshot on connect, so when it is our turn (including move one) we
-            // react to that event with the real position and clock.
+            GameState game = await tournamentClient.GetGameAsync(
+                registration.ServerUrl, registration.TournamentId, gameId, ct);
+
+            if (game.Turn == ourColor && game.Status == "ongoing")
+            {
+                long remainingMs = ourColor == "white"
+                    ? (long)(game.Clock.WhiteTime * 1000)
+                    : (long)(game.Clock.BlackTime * 1000);
+                int moveCount = game.Moves.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+                long timeLimitMs = GameDriver.ComputeTimeLimitMs(remainingMs, moveCount);
+
+                string move = await engineMoveSource.GetBestMoveAsync(
+                    registration.MaichessBotId, game.Fen, (int)timeLimitMs, ct);
+
+                await tournamentClient.SubmitMoveAsync(
+                    registration.ServerUrl,
+                    registration.BotToken,
+                    registration.TournamentId,
+                    gameId,
+                    move,
+                    ct);
+            }
+
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
@@ -340,9 +360,18 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
-            // The game stream emits the full gameState snapshot on connect, which
-            // drives the first move (when it is our turn) from the real position —
-            // no separate opening-move submission is needed.
+            if (GameDriver.DetermineAction(state) == GameDriverAction.RequestEngineMove)
+            {
+                string firstMove = await GetEngineMoveAsync(registration.MaichessBotId, state, ct);
+                await tournamentClient.SubmitMoveAsync(
+                    registration.ServerUrl,
+                    state.OurBotToken,
+                    state.TournamentId,
+                    state.GameId,
+                    firstMove,
+                    ct);
+            }
+
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
