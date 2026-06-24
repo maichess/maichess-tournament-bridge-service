@@ -334,6 +334,7 @@ internal sealed class TournamentOrchestrator(
     private async Task DriveGameAsync(
         Registration registration, GameDriverState state, CancellationToken ct)
     {
+        bool finalized = false;
         try
         {
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
@@ -366,6 +367,7 @@ internal sealed class TournamentOrchestrator(
 
                     case GameDriverAction.FinalizeMatch:
                         await SyncMatchStateAsync(state, ct);
+                        finalized = true;
                         return;
 
                     case GameDriverAction.SyncToMatchDb:
@@ -381,6 +383,18 @@ internal sealed class TournamentOrchestrator(
         }
         finally
         {
+            if (!finalized && state.IsFinished)
+            {
+                try
+                {
+                    await SyncMatchStateAsync(state, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Best-effort final sync failed for {GameId}", state.GameId);
+                }
+            }
+
             _gameOwners.TryRemove(state.GameId, out _);
         }
     }

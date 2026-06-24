@@ -25,11 +25,19 @@ internal static class GameDriver
         string fen = evt.Fen ?? state.CurrentFen;
         List<string> moves = NextMoves(state, evt);
 
-        string status = evt.Type switch
+        string rawStatus = evt.Type switch
         {
             "gameFinish" or "gameEnd" => MapWinnerToStatus(evt.Winner),
             _ => evt.Status ?? state.Status,
         };
+
+        // Normalize raw terminal statuses (e.g. "checkmate", "timeout") that
+        // arrive on a gameState snapshot of an already-finished game so that
+        // SyncMatchStateAsync sees the "white_won"/"black_won"/"draw" it expects.
+        string status = rawStatus is "ongoing" or "started" or "pending"
+            or "white_won" or "black_won" or "draw"
+            ? rawStatus
+            : MapWinnerToStatus(evt.Winner);
 
         string turnColor = evt.Turn ?? state.TurnColor;
 

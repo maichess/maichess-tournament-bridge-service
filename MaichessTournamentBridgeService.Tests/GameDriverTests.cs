@@ -195,6 +195,34 @@ public sealed class GameDriverTests
     }
 
     [Theory]
+    [InlineData("checkmate", "white", "white_won")]
+    [InlineData("checkmate", "black", "black_won")]
+    [InlineData("timeout", "white", "white_won")]
+    [InlineData("timeout", "black", "black_won")]
+    [InlineData("resigned", "white", "white_won")]
+    [InlineData("stalemate", null, "draw")]
+    [InlineData("draw", null, "draw")]
+    internal void ApplyGameEvent_TerminalGameStateSnapshot_NormalizesStatus(
+        string rawStatus, string? winner, string expectedStatus)
+    {
+        GameDriverState state = NewState("white");
+
+        var snapshot = new GameEvent(
+            Type: "gameState",
+            Fen: "8/8/8/8/8/5k2/8/R3K3 b - - 0 1",
+            Moves: "e2e4 e7e5",
+            Turn: "black",
+            Status: rawStatus,
+            Winner: winner);
+
+        GameDriverState next = GameDriver.ApplyGameEvent(state, snapshot);
+
+        Assert.Equal(expectedStatus, next.Status);
+        Assert.True(next.IsFinished);
+        Assert.Equal(GameDriverAction.FinalizeMatch, GameDriver.DetermineAction(next));
+    }
+
+    [Theory]
     [InlineData("white", "white_won")]
     [InlineData("black", "black_won")]
     [InlineData("none", "draw")]
