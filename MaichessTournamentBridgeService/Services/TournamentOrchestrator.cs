@@ -278,17 +278,12 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
-            var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            _ = SubmitInitialMoveIfNeededAsync(registration, gameId, ourColor, connected.Task, ct);
-
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
                 registration.TournamentId,
                 gameId,
-                ct,
-                onConnected: () => connected.TrySetResult()))
+                ct))
             {
                 if (!GameDriver.IsActionable(evt))
                 {
@@ -341,20 +336,12 @@ internal sealed class TournamentOrchestrator(
     {
         try
         {
-            var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            if (GameDriver.DetermineAction(state) == GameDriverAction.RequestEngineMove)
-            {
-                _ = SubmitInitialMoveAsync(registration, state, connected.Task, ct);
-            }
-
             await foreach (GameEvent evt in tournamentClient.StreamGameAsync(
                 registration.ServerUrl,
                 registration.BotToken,
                 registration.TournamentId,
                 state.GameId,
-                ct,
-                onConnected: () => connected.TrySetResult()))
+                ct))
             {
                 if (!GameDriver.IsActionable(evt))
                 {
@@ -395,62 +382,6 @@ internal sealed class TournamentOrchestrator(
         finally
         {
             _gameOwners.TryRemove(state.GameId, out _);
-        }
-    }
-
-    private async Task SubmitInitialMoveIfNeededAsync(
-        Registration registration, string gameId, string ourColor, Task connected, CancellationToken ct)
-    {
-        try
-        {
-            await connected;
-            GameState game = await tournamentClient.GetGameAsync(
-                registration.ServerUrl, registration.TournamentId, gameId, ct);
-
-            if (game.Turn == ourColor && game.Status == "ongoing")
-            {
-                long remainingMs = ourColor == "white"
-                    ? (long)(game.Clock.WhiteTime * 1000)
-                    : (long)(game.Clock.BlackTime * 1000);
-                int moveCount = game.Moves.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-                long timeLimitMs = GameDriver.ComputeTimeLimitMs(remainingMs, moveCount);
-
-                string move = await engineMoveSource.GetBestMoveAsync(
-                    registration.MaichessBotId, game.Fen, (int)timeLimitMs, ct);
-
-                await tournamentClient.SubmitMoveAsync(
-                    registration.ServerUrl,
-                    registration.BotToken,
-                    registration.TournamentId,
-                    gameId,
-                    move,
-                    ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Initial move check failed for {GameId} bot {BotId}", gameId, registration.MaichessBotId);
-        }
-    }
-
-    private async Task SubmitInitialMoveAsync(
-        Registration registration, GameDriverState state, Task connected, CancellationToken ct)
-    {
-        try
-        {
-            await connected;
-            string move = await GetEngineMoveAsync(registration.MaichessBotId, state, ct);
-            await tournamentClient.SubmitMoveAsync(
-                registration.ServerUrl,
-                state.OurBotToken,
-                state.TournamentId,
-                state.GameId,
-                move,
-                ct);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Initial move submission failed for {GameId}", state.GameId);
         }
     }
 
