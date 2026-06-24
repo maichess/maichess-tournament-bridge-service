@@ -383,11 +383,32 @@ internal sealed class TournamentOrchestrator(
         }
         finally
         {
-            if (!finalized && state.IsFinished)
+            if (!finalized)
             {
                 try
                 {
-                    await SyncMatchStateAsync(state, CancellationToken.None);
+                    if (!state.IsFinished)
+                    {
+                        GameState finalGame = await tournamentClient.GetGameAsync(
+                            registration.ServerUrl, registration.TournamentId, state.GameId, CancellationToken.None);
+
+                        if (finalGame.Status is not "ongoing" and not "started" and not "pending")
+                        {
+                            state = state with
+                            {
+                                Status = GameDriver.MapWinnerToStatus(finalGame.Winner),
+                                CurrentFen = finalGame.Fen,
+                                Moves = [.. finalGame.Moves.Split(' ', StringSplitOptions.RemoveEmptyEntries)],
+                                WhiteTimeMs = (long)(finalGame.Clock.WhiteTime * 1000),
+                                BlackTimeMs = (long)(finalGame.Clock.BlackTime * 1000),
+                            };
+                        }
+                    }
+
+                    if (state.IsFinished)
+                    {
+                        await SyncMatchStateAsync(state, CancellationToken.None);
+                    }
                 }
                 catch (Exception ex)
                 {
