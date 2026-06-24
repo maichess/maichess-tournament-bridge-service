@@ -143,14 +143,13 @@ internal sealed class TournamentOrchestrator(
 
             foreach (TournamentPairing pairing in pairings.Pairings)
             {
-                if (pairing.Matches.Count > 0)
+                foreach (TournamentMatch match in pairing.Matches)
                 {
-                    string gameId = pairing.Matches[0].GameId;
-                    _roundPairings[gameId] = (pairing.White.Id, pairing.Black.Id);
+                    _roundPairings[match.GameId] = (pairing.White.Id, pairing.Black.Id);
                     logger.LogInformation(
                         "Round {Round} pairing: {GameId} white={White} black={Black}",
                         round,
-                        gameId,
+                        match.GameId,
                         pairing.White.Id,
                         pairing.Black.Id);
                 }
